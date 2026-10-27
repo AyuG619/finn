@@ -113,9 +113,10 @@ async def _run(job: Job) -> None:
     finally:
         job.finished = time.time()
         job.result["engine"] = _engine_meta(calls, job)
+        not_found = job.error is not None and job.error.startswith("No company found")
         for s in job.stages:
             if s["status"] in ("pending", "running"):
-                s["status"] = "skipped" if job.status == "done" else "error"
+                s["status"] = "skipped" if job.status == "done" or not_found else "error"
         if job.status == "done":
             cache.put(result_key(job.symbol), {k: v for k, v in job.view().items()})
 
