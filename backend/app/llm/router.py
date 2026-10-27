@@ -513,13 +513,15 @@ async def complete(
     deadline: float | None = None,
     effort: str | None = None,
     search_agents: bool | None = None,
+    borrow: bool = True,
 ) -> LLMResult:
     """Run a task on the best available model for ``tier`` with caching and fallbacks.
 
     ``document`` is the long source text; it is placed after ``prompt`` and truncated to fit
     smaller models. ``pdf`` (bytes) requires a PDF-capable provider. ``validate`` is an optional
     callable that raises on semantically bad JSON, triggering the next fallback.
-    ``timeout`` bounds each model call and ``deadline`` (seconds) the whole ladder. ``effort="low"``
+    ``timeout`` bounds each model call and ``deadline`` (seconds) the whole ladder. ``borrow=False`` keeps
+    the call on its own tier instead of falling through to the other tier's models. ``effort="low"``
     caps thinking on reasoning models. With ``search``, ``search_agents`` False/True restricts the
     ladder to grounded chat models / to search agents (whose fetched pages cost far more tokens).
     """
@@ -537,6 +539,8 @@ async def complete(
     ladder = [s for s in _slots.get(tier, []) if (pdf is None or s.supports_pdf) and (s.supports_search if search else not s.search_only)]
     if search and search_agents is not None:
         ladder = [s for s in ladder if s.search_only == search_agents]
+    if not borrow:  # stay on this tier's own models (e.g. when a later step will escalate anyway)
+        ladder = [s for s in ladder if s.tier == tier]
     if not ladder:
         raise LLMUnavailable(f"no model available for tier={tier} pdf={pdf is not None} search={search}")
     errors: list[str] = []

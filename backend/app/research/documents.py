@@ -138,6 +138,7 @@ def _toc_candidates(doc: "fitz.Document") -> list[int]:
     return sorted(pages)
 
 
+@pdfs.frees_memory
 def _select_ar_pages(data: bytes) -> tuple[list[int], dict[int, str], int]:
     doc = fitz.open(stream=data, filetype="pdf")
     try:

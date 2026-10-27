@@ -371,8 +371,9 @@ async def results_card(filing: dict, ctx: dict) -> dict:
                         max_tokens=4096,
                         validate=_validate_results,
                         effort="low",
-                        timeout=60 if mode == "text" else 75,
-                        deadline=80 if mode == "text" else 100,
+                        timeout=45 if tier == "fast" else 75,
+                        deadline=60 if tier == "fast" else 100,
+                        borrow=n == len(passes),  # earlier passes fail fast: a later pass escalates anyway
                     )
                 except LLMUnavailable as exc:
                     log.info("results pass %d (%s/%s) failed for %s: %s", n, mode, tier, filing.get("id"), str(exc)[:200])

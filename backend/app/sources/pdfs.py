@@ -7,8 +7,12 @@ to 300-500 pages. Two rules keep this cheap: (1) only the relevant pages are eve
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import functools
+import gc
 import logging
 import re
+import threading
 
 import fitz  # PyMuPDF
 
@@ -21,6 +25,44 @@ MAX_PDF_BYTES = 80 * 1024 * 1024
 
 class PdfError(RuntimeError):
     pass
+
+
+try:
+    _libc = ctypes.CDLL("libc.so.6")
+    _libc.mallopt(-8, 2)  # M_ARENA_MAX=2: worker threads otherwise each grow their own malloc arena
+except (OSError, AttributeError):
+    _libc = None
+
+
+def release_memory() -> None:
+    """Hand MuPDF's object cache and freed heap back to the OS. The free hosting tier has 512 MB, and
+    a scanned filing or a 400-page annual report briefly takes a large share of it."""
+    try:
+        fitz.TOOLS.store_shrink(100)
+    except Exception:  # noqa: BLE001
+        pass
+    gc.collect()
+    if _libc is not None:
+        try:
+            _libc.malloc_trim(0)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+_PDF_LOCK = threading.RLock()
+
+
+def frees_memory(fn):
+    """Decorator for PDF workers (run in threads). One at a time, which bounds peak memory and keeps
+    MuPDF's shared context single-threaded; memory is released when each finishes."""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        with _PDF_LOCK:
+            try:
+                return fn(*a, **kw)
+            finally:
+                release_memory()
+    return wrapper
 
 
 def _candidates(url: str) -> list[str]:
@@ -56,6 +98,7 @@ async def fetch_pdf(url: str) -> bytes:
     raise PdfError(f"could not download {url}: {last}")
 
 
+@frees_memory
 def _extract(data: bytes, max_pages: int | None) -> list[str]:
     try:
         doc = fitz.open(stream=data, filetype="pdf")
@@ -78,6 +121,7 @@ async def page_texts(url: str, max_pages: int | None = None) -> list[str]:
     return await cache.cached(f"pdftext:{url}:{max_pages}", cache.FOREVER, compute, mem=False)
 
 
+@frees_memory
 def page_count(data: bytes) -> int:
     with fitz.open(stream=data, filetype="pdf") as doc:
         return doc.page_count
@@ -90,6 +134,7 @@ def has_text_layer(pages: list[str], min_chars: int = 250) -> bool:
     return rich >= max(1, len(pages) // 3)
 
 
+@frees_memory
 def trim_pdf(data: bytes, pages: list[int]) -> bytes:
     """A new PDF containing only ``pages`` (0-based), in order.
 
@@ -113,6 +158,7 @@ def trim_pdf(data: bytes, pages: list[int]) -> bytes:
         src.close()
 
 
+@frees_memory
 def raster_pages(data: bytes, pages: list[int], dpi: int = 160) -> bytes:
     """``pages`` re-rendered as plain images in a new PDF. For a model's second look at a scanned filing:
     the image alone, without the (often garbled) OCR text layer that came with it."""
