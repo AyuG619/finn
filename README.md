@@ -58,11 +58,15 @@ Type any NSE symbol or company name. Within a few seconds the numbers sections a
 the model-written sections follow, with live progress shown.
 
 1. **Financial snapshot.** TTM revenue, margins, PAT, ROE/ROCE, D/E and valuation, plus rule-written signals.
+   Banks get interest earned, net interest income and NPAs instead of revenue and operating margin.
 2. **Promised vs delivered.** Guidance extracted from the last four earnings calls, each item stamped
    *Delivered / Missed / Partly / Pending*, with a credibility score.
    - **Quantitative, company-level, rupee promises are scored by code** against reported quarterly and annual numbers.
-   - Qualitative promises are judged by the model, citing the later call that settles them.
+   - Qualitative promises are judged by the model, citing the later call that settles them. Code still
+     polices those verdicts: nothing is "missed" before its period has been reported, and nothing is
+     settled on evidence from before the promised period.
    - Constant-currency, USD and segment-level guidance is never forced against consolidated ₹ numbers.
+   - A credibility score needs at least three settled promises; fewer than that and FINN says so.
 3. **Narrative vs numbers.** What management says next to what the numbers show: agrees, diverges or mixed.
 4. **Current guidance**, and a **bull vs bear** case where every point carries its evidence.
 5. **Business snapshot** from the annual report: what the company does, segments and revenue mix, the
