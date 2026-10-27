@@ -32,12 +32,13 @@ trent", "show last week", "alert me on 3% moves") or answers a question from the
 Each kind of slip has its own anatomy:
 
 - **Results** → the actual results filing is read (scanned PDFs too) and turned into **Revenue, EBITDA, PBT
-  and PAT, with QoQ and YoY change** and the margin change in bps. Revenue is **cross-checked against
-  screener.in**, and the slip says whether it matched. For lenders, EBITDA becomes pre-provision profit,
-  because EBITDA means nothing for a bank.
+  and PAT, with QoQ and YoY change** and the margin change in bps. Every column is **cross-checked against
+  screener.in**: the new quarter once screener has it, and the previous and year-ago columns on results day,
+  before it does. The slip says what matched. For lenders, EBITDA becomes pre-provision profit, because
+  EBITDA means nothing for a bank.
 - **Management change** → who is leaving, who is coming, the reason given, and a **short professional
-  background of the incoming person**. It combines the profile SEBI requires in the filing with a
-  Google-grounded web search (LinkedIn preferred) and links to the sources.
+  background of the incoming person**. It combines the profile SEBI requires in the filing with a web
+  search (LinkedIn preferred) and links to the sources.
 - **Unusual move** → % move, volume vs its trailing average, a 30-session sparkline, the **likely driver**
   (the most material filing since the previous close), and the effect on your book in bps.
 - **Everything else** → one specific line ("Wins ₹2,140 cr order from NHPC …"), key facts and a "so what",
@@ -112,8 +113,9 @@ AI summaries. Prompts forbid model memory, and every claim carries a page refere
 |---|---|---|
 | Classify filings | **Rules** (exchange tags + keyword rules, 80+ tests on real filings) | Free, instant, deterministic; ~90% of filings never touch a model |
 | Ambiguous filings, one-liners, results extraction, management changes, transcript and AR notes | **Fast tier**: Gemini Flash-Lite (native PDF, so scanned filings work), Groq fallback | Bulk reading |
+| A results read that fails the checks | **Smart tier reads the page images** (Gemini Flash) | Scanned filings' OCR layers drop lines; pay for the better model only when the cheap read is wrong |
 | Promise verdicts, narrative vs numbers, bull/bear | **Smart tier**: Gemini Flash, Groq gpt-oss-120b fallback | The one step where reasoning matters |
-| Incoming executive's background | Fast tier + Google Search grounding | Needs the web; everything else must not |
+| Incoming executive's background | Gemini + Google Search grounding → Groq compound (built-in web search) → keyless web search + fast model | Needs the web; everything else must not. Free search quotas are small, so there are three routes |
 | All arithmetic (growth, margins, EBITDA, promise scoring, CFO/PAT) | **Code** | Models don't do sums here |
 
 - Model names are **discovered from each API key at startup** (Gemini's model list is ranked: aliases,
@@ -122,7 +124,7 @@ AI summaries. Prompts forbid model memory, and every claim carries a page refere
 - Every model call is cached by a content hash, forever. Filings and transcripts never change, so a
   second visit costs nothing.
 - Only relevant pages are sent:
-  - results: 4 scored pages;
+  - results: the 2 pages with the densest P&L statement (consolidated preferred);
   - annual reports: about 25 TOC/keyword-selected pages out of 300–500;
   - transcripts: opening remarks plus the most forward-looking Q&A passages.
 - A typical research run is 6 model calls and about 70k tokens, which is **≈ $0.01 at list prices and ₹0 on free tiers**.
@@ -134,8 +136,14 @@ AI summaries. Prompts forbid model memory, and every claim carries a page refere
   **NSE → BSE → screener**, adaptive at runtime: a failing feed drops to the back for 10 minutes.
 - **Prices.** Yahoo has occasional holes (it may know a session happened but have no print). FINN fills
   them from screener's NSE series. If it can't, the move is labelled "since 23 Oct" instead of "in a day".
+- **Results you can trust.** A read must satisfy the accounting identities (revenue + other income = total
+  income; income − expenses ± exceptional = PBT) and match screener.in on every column screener has.
+  - A clean power-of-ten mismatch is a misread unit (₹ million read as crore). It is corrected and labelled.
+  - Any other mismatch triggers the second read from the page images. If that also disagrees, screener's
+    standardised numbers are shown, labelled as such, with the size of the disagreement.
 - **Degraded answers.** When a model or PDF is unavailable, FINN shows the deterministic version (the
-  exchange headline, or screener's numbers labelled as such). It retries later; it never caches a bad answer forever.
+  exchange headline, or screener's numbers labelled as such). Unverified and degraded cards are re-checked
+  later; a bad answer is never cached forever.
 - **Offline UI.** The UI keeps the last brief in local storage and shows it instantly while refreshing.
 
 ---
@@ -163,7 +171,7 @@ AI summaries. Prompts forbid model memory, and every claim carries a page refere
 - Persistent storage: Render's free tier has an ephemeral disk, so caches and push subscriptions reset on redeploy.
   A small Postgres or Redis instance is the first thing to add.
 - XBRL parsing of results: more exact than PDF reading, but NSE's XBRL host is unreliable from cloud IPs.
-  Reading the PDF and cross-checking against screener works everywhere.
+  Reading the PDF and cross-checking every column against screener works everywhere.
 
 ## Where it goes next
 
@@ -190,8 +198,10 @@ uvicorn app.main:app --reload --port 8765
 # frontend (dev server proxies /api to :8765)
 cd ../frontend && npm ci && npm run dev
 
-# tests (no network needed)
+# tests (no network needed): 97 unit tests
 cd ../backend && python -m pytest -q
+# 20 end-to-end UI flows (Playwright) against the mock server below
+python tests/ui_flows.py
 
 # UI without network or keys: real digest pipeline over captured NSE filings, canned model output
 python -m tests.mock_server    # then open http://127.0.0.1:8765

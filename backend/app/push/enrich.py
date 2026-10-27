@@ -638,7 +638,7 @@ async def summary_card(filing: dict, ctx: dict) -> dict:
 # --------------------------------------------------------------------------- dispatcher
 
 def enrichment_key(filing_id: str) -> str:
-    return f"enrich:v4:{filing_id}"
+    return f"enrich:v5:{filing_id}"
 
 
 _inflight: dict[str, asyncio.Task] = {}

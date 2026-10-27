@@ -416,3 +416,21 @@ async def test_results_card_fresh_quarter_in_million_is_rescaled(monkeypatch):
     assert len(calls) == 1
     assert card["metrics"][0]["value"] == 53340.2 and card["unit_note"]
     assert card["verified"]["ok"] and not card["verified"]["current_checked"] and card["provisional"]
+
+
+def test_trim_pdf_keeps_selected_pages_and_raster_fallback():
+    import fitz
+
+    from app.sources import pdfs
+
+    doc = fitz.open()
+    for i in range(5):
+        doc.new_page().insert_text((72, 72), f"page {i + 1} revenue from operations")
+    for i in range(4):  # links into a page that won't be copied
+        doc.load_page(i).insert_link({"kind": fitz.LINK_GOTO, "page": 4, "from": fitz.Rect(70, 60, 200, 80)})
+    data = doc.tobytes()
+    out = fitz.open(stream=pdfs.trim_pdf(data, [3, 1, 9]), filetype="pdf")
+    assert out.page_count == 2 and "page 4" in out.load_page(0).get_text() and "page 2" in out.load_page(1).get_text()
+    src = fitz.open(stream=data, filetype="pdf")
+    raster = fitz.open(stream=pdfs._raster_pdf(src, [0, 2]), filetype="pdf")
+    assert raster.page_count == 2 and raster.load_page(0).get_images()

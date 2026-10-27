@@ -147,7 +147,9 @@ GROQ_PREFS = {
         "meta-llama/llama-4-scout-17b-16e-instruct",
     ],
 }
-GROQ_SEARCH_MODELS = ["groq/compound-mini", "groq/compound"]
+# Web-search-capable Groq models: compound systems search on their own; GPT-OSS models take the
+# built-in browser_search tool. Which exist depends on the key, so they are discovered like the rest.
+GROQ_SEARCH_MODELS = ["groq/compound-mini", "groq/compound", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]
 # Free-tier tokens-per-minute budgets are the binding constraint on Groq; keep requests well inside.
 GROQ_INPUT_BUDGET = {
     "llama-3.1-8b-instant": 4500,
@@ -219,7 +221,7 @@ async def discover(force: bool = False) -> dict:
             # Groq's compound systems run their own web search: the fallback when Google grounding's
             # free quota is exhausted. Used only for calls that ask for search.
             for n in GROQ_SEARCH_MODELS:
-                if not gnames or n in gnames:
+                if n in gnames:
                     for tier, target in (("fast", fast), ("smart", smart)):
                         target.append(ModelSlot("groq", n, tier, rpm=12, max_input_tokens=6000, supports_search=True, search_only=True))
         # Each tier can borrow the other tier's models as a last resort.
@@ -386,7 +388,7 @@ async def _call_gemini(slot: ModelSlot, system: str, prompt: str, *, json_mode: 
 
 
 async def _call_groq(slot: ModelSlot, system: str, prompt: str, *, json_mode: bool, max_tokens: int,
-                     temperature: float) -> tuple[str, int, int, list]:
+                     temperature: float, search: bool = False) -> tuple[str, int, int, list]:
     agent = "compound" in slot.model
     body: dict = {
         "model": slot.model,
@@ -394,11 +396,14 @@ async def _call_groq(slot: ModelSlot, system: str, prompt: str, *, json_mode: bo
     }
     if not agent:  # compound systems take a minimal request; the prompt itself asks for JSON
         body["temperature"] = temperature
-        body["max_completion_tokens"] = max_tokens
-        if json_mode:
+        body["max_completion_tokens"] = max_tokens + (1500 if search else 0)
+        if json_mode and not search:
             body["response_format"] = {"type": "json_object"}
     if "gpt-oss" in slot.model:
-        body["reasoning_effort"] = "low" if slot.tier == "fast" else "medium"
+        body["reasoning_effort"] = "low" if slot.tier == "fast" or search else "medium"
+        if search:
+            body["tools"] = [{"type": "browser_search"}]
+            body["tool_choice"] = "required"
     r = await _http().post(
         f"{GROQ_BASE}/chat/completions", json=body, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}
     )
@@ -422,19 +427,30 @@ async def _call_groq(slot: ModelSlot, system: str, prompt: str, *, json_mode: bo
     if not text.strip():
         raise _BadRequest("groq empty output")
     u = data.get("usage") or {}
-    return text, int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0), groq_sources(msg) if agent else []
+    return text, int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0), groq_sources(msg) if (agent or search) else []
 
 
 def groq_sources(msg: dict) -> list[dict]:
-    """Web pages a Groq compound system read (message.executed_tools[].search_results.results[])."""
+    """Web pages a Groq search call read. They sit under message.executed_tools (search_results.results[]
+    for compound and browser_search); walk the structure rather than trust one exact shape."""
     out, seen = [], set()
-    for tool in msg.get("executed_tools") or []:
-        res = (tool.get("search_results") or {}).get("results") if isinstance(tool, dict) else None
-        for r in res or []:
-            url = (r or {}).get("url")
-            if url and url.startswith("http") and url not in seen:
+
+    def walk(node, depth=0):
+        if depth > 6 or len(out) >= 8:
+            return
+        if isinstance(node, dict):
+            url = node.get("url")
+            if isinstance(url, str) and url.startswith("http") and url not in seen:
                 seen.add(url)
-                out.append({"title": r.get("title") or "source", "url": url})
+                out.append({"title": str(node.get("title") or "source")[:200], "url": url})
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    walk(v, depth + 1)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, depth + 1)
+
+    walk(msg.get("executed_tools") or [])
     return out[:8]
 
 
@@ -530,7 +546,7 @@ async def complete(
                     )
                 else:
                     text, tin, tout, sources = await _call_groq(
-                        slot, system, full_prompt, json_mode=json_mode, max_tokens=max_tokens, temperature=temperature
+                        slot, system, full_prompt, json_mode=json_mode, max_tokens=max_tokens, temperature=temperature, search=search
                     )
             except _RateLimited as rl:
                 pause = 3600 if rl.daily else min(max(rl.retry_after, 5), 120)

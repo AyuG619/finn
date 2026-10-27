@@ -91,17 +91,39 @@ def has_text_layer(pages: list[str], min_chars: int = 250) -> bool:
 
 
 def trim_pdf(data: bytes, pages: list[int]) -> bytes:
-    """A new PDF containing only ``pages`` (0-based), in order."""
+    """A new PDF containing only ``pages`` (0-based), in order.
+
+    Copies the pages without links, annotations or form fields (signed filings carry broken ones that
+    make PyMuPDF's copy fail). If the copy still fails, the pages are re-rendered as images.
+    """
     src = fitz.open(stream=data, filetype="pdf")
+    try:
+        keep = [p for p in pages if 0 <= p < src.page_count]
+        out = fitz.open()
+        try:
+            for p in keep:
+                out.insert_pdf(src, from_page=p, to_page=p, links=0, annots=0, widgets=0)
+            return out.tobytes(garbage=3, deflate=True)
+        except Exception as exc:  # noqa: BLE001
+            log.info("page copy failed (%s); rasterising %d pages", exc, len(keep))
+        finally:
+            out.close()
+        return _raster_pdf(src, keep)
+    finally:
+        src.close()
+
+
+def _raster_pdf(src, pages: list[int], dpi: int = 150) -> bytes:
     out = fitz.open()
     try:
         for p in pages:
-            if 0 <= p < src.page_count:
-                out.insert_pdf(src, from_page=p, to_page=p)
-        return out.tobytes(garbage=3, deflate=True)
+            page = src.load_page(p)
+            pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY)
+            dst = out.new_page(width=page.rect.width, height=page.rect.height)
+            dst.insert_image(dst.rect, stream=pix.tobytes("jpeg", jpg_quality=80))
+        return out.tobytes(deflate=True)
     finally:
         out.close()
-        src.close()
 
 
 def score_pages(pages: list[str], keywords: dict[str, float]) -> list[tuple[int, float]]:
