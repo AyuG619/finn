@@ -109,4 +109,4 @@ async def announcements(code: str, days: int = 30) -> list[dict]:
     end = now_ist()
     start = end - timedelta(days=days)
     key = f"bse:ann:{code}:{days}:{end.strftime('%Y%m%d')}"
-    return await cache.cached(key, 300, lambda: _fetch_range(code, start, end))
+    return await cache.cached(key, 300, lambda: _fetch_range(code, start, end), swr=3600)

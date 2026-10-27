@@ -314,7 +314,7 @@ async def company_page(symbol: str) -> dict:
         data["symbol"] = data.get("nse_symbol") or sym
         return data
 
-    return await cache.cached(f"screener:page:{sym}", 6 * 3600, fetch)
+    return await cache.cached(f"screener:page:{sym}", 6 * 3600, fetch, swr=24 * 3600)
 
 
 async def company_ids(symbol: str) -> dict:

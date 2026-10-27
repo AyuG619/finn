@@ -218,3 +218,24 @@ def test_websearch_parses_duckduckgo_html():
     assert r[0] == {"title": "Ravi Kumar - CFO - Bajaj Finance | LinkedIn", "url": "https://in.linkedin.com/in/ravi-kumar",
                     "snippet": "Experience: Bajaj Finance & HDFC Bank. Education: ICAI"}
     assert r[1]["url"] == "https://example.com/news"
+
+
+async def test_cache_stale_while_revalidate(tmp_path):
+    import asyncio
+    import time
+
+    from app import cache
+
+    calls = []
+
+    async def fn():
+        calls.append(time.time())
+        return {"n": len(calls)}
+
+    key = f"test:swr:{time.time()}"
+    assert (await cache.cached(key, 0.05, fn, swr=60))["n"] == 1
+    await asyncio.sleep(0.08)  # now stale but inside the SWR window
+    assert (await cache.cached(key, 0.05, fn, swr=60))["n"] == 1  # served stale immediately
+    await asyncio.sleep(0.05)  # background refresh has run
+    assert len(calls) == 2
+    assert (await cache.cached(key, 0.05, fn, swr=60))["n"] == 2

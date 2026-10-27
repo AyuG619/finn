@@ -140,7 +140,7 @@ async def announcements(symbol: str, days: int = 30) -> list[dict]:
     end = now_ist()
     start = end - timedelta(days=days)
     key = f"nse:ann:{symbol}:{days}:{end.strftime('%Y%m%d')}"
-    return await cache.cached(key, 300, lambda: _fetch(symbol, start, end))
+    return await cache.cached(key, 300, lambda: _fetch(symbol, start, end), swr=3600)
 
 
 async def annual_reports(symbol: str) -> list[dict]:

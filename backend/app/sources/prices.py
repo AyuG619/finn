@@ -150,7 +150,7 @@ async def history(symbol: str, range_: str = "1y") -> dict:
             data = await _fill_gaps(symbol, data, days)
         return data
 
-    data = await cache.cached(f"prices:v2:{symbol}:{range_}", 600, fetch)
+    data = await cache.cached(f"prices:v2:{symbol}:{range_}", 600, fetch, swr=6 * 3600)
     for b in data["bars"]:
         b["provisional"] = _is_provisional(b["date"])
     return data

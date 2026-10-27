@@ -121,16 +121,42 @@ def _remember(key: str, value: Any, t: float) -> None:
 
 
 async def cached(
-    key: str, ttl: float, fn: Callable[[], Awaitable[Any]], *, stale_ok_on_error: bool = True, mem: bool = True
+    key: str,
+    ttl: float,
+    fn: Callable[[], Awaitable[Any]],
+    *,
+    stale_ok_on_error: bool = True,
+    mem: bool = True,
+    swr: float = 0,
 ) -> Any:
     """Return cached value or compute it once (concurrent callers share the same computation).
 
-    If computing fails and an expired value exists, the expired value is returned instead of raising
-    (``stale_ok_on_error``): a slightly old filing list beats an error screen.
+    ``swr`` (stale-while-revalidate, seconds): a value up to ``ttl + swr`` old is returned at once while
+    a fresh one is fetched in the background, so a user never waits for a feed the server refreshed
+    a few minutes ago. If computing fails and an expired value exists, the expired value is returned
+    instead of raising (``stale_ok_on_error``): a slightly old filing list beats an error screen.
     """
     val = get(key, ttl, mem)
     if val is not None:
         return val
+    if swr:
+        stale = get(key, ttl + swr, mem)
+        if stale is not None:
+            if key not in _inflight:
+                t = asyncio.create_task(_compute(key, fn, mem, True))
+                _background.add(t)
+                t.add_done_callback(_background.discard)
+            return stale
+    fut = _inflight.get(key)
+    if fut is not None:
+        return await asyncio.shield(fut)
+    return await _compute(key, fn, mem, stale_ok_on_error)
+
+
+_background: set[asyncio.Task] = set()
+
+
+async def _compute(key: str, fn: Callable[[], Awaitable[Any]], mem: bool, stale_ok_on_error: bool) -> Any:
     fut = _inflight.get(key)
     if fut is not None:
         return await asyncio.shield(fut)
