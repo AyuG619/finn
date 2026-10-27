@@ -302,7 +302,8 @@ async def _pipeline(job: Job, calls: list[dict]) -> None:
     except LLMUnavailable as exc:
         a = {}
         job.result["analysis_note"] = f"Analysis model unavailable right now ({str(exc)[:100]}). Numbers and document notes are shown."
-    promises = analyst.merge_promises(computed, a.get("promises") or [])
+    qkeys = (page.get("quarters") or {}).get("keys") or []
+    promises = analyst.merge_promises(computed, a.get("promises") or [], qkeys[-1] if qkeys else None)
     cred = analyst.credibility(promises)
     model_cred = a.get("credibility") if isinstance(a.get("credibility"), dict) else None
     job.result["promises"] = {

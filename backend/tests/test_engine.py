@@ -483,3 +483,32 @@ def test_model_verdict_on_earlier_period_evidence_becomes_pending():
     out = {p["id"]: p for p in analyst.merge_promises([], [capex, plant, early])}
     assert out["g1"]["outcome"] == "pending" and "before the promised period" in out["g1"]["evidence"]
     assert out["q3"]["outcome"] == "delivered" and out["q4"]["outcome"] == "delivered"
+
+
+def test_refinement_demotes_immaterial_amounts_found_in_the_filing():
+    from app.push.enrich import apply_refinement
+
+    item = {"category": "m_and_a", "score": 74, "why": ["exchange tag: Acquisition"], "market_cap_cr": 400000.0, "needs_model": False}
+    card = {"kind": "summary", "one_liner": "Incorporates OSCOE Foundation as a wholly owned subsidiary for INR 100,000.",
+            "key_facts": [{"label": "Cost of Subscription", "value": "INR 100,000"}], "materiality": 2}
+    apply_refinement(item, card)
+    assert item["score"] == 38 and item["amount_cr"] == 0.01 and item["why"][-1].startswith("₹1 lakh is 0.000")
+    big = {"category": "m_and_a", "score": 74, "why": [], "market_cap_cr": 40000.0, "needs_model": False}
+    apply_refinement(big, {"kind": "summary", "one_liner": "Acquires X for ₹4,000 crore", "materiality": 4})
+    assert big["score"] == 74 and big["amount_pct_mcap"] == 10.0
+
+
+def test_model_cannot_call_an_open_period_missed():
+    from app.research.analyst import quarter_index
+
+    assert quarter_index("2026-09-30") == 27 * 4 + 1  # Q2 FY27
+    assert quarter_index("2027-03-31") == 27 * 4 + 3  # Q4 FY27
+    ps = [{"id": "a", "made_in": "Q2 FY27 call", "promise": "Profit growth at or above balance-sheet growth", "due": "Full FY27",
+           "outcome": "missed", "evidence": "H1 profit growth 8% vs loan growth 11%"},
+          {"id": "b", "made_in": "Q1 FY27 call", "promise": "NIM up from next quarter", "due": "Next quarter (Q2 FY27)",
+           "outcome": "missed", "evidence": "Q2 FY27 NIM flat"},
+          {"id": "c", "made_in": "Q2 FY27 call", "promise": "Open 500 branches", "due": "FY27", "outcome": "delivered", "evidence": "Opened 520 in H1"}]
+    out = {p["id"]: p for p in analyst.merge_promises([], ps, "2026-09-30")}
+    assert out["a"]["outcome"] == "pending" and out["a"]["evidence"].startswith("Period not over yet")
+    assert out["b"]["outcome"] == "missed"  # Q2 FY27 has been reported
+    assert out["c"]["outcome"] == "delivered"  # delivering early is possible; missing early is not

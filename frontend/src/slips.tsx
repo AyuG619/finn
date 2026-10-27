@@ -14,6 +14,8 @@ export function Delta({ v }: { v: number | null | undefined }) {
   return <span className={`delta ${tone(v)}`}>{pct(v)}</span>;
 }
 
+const within = (d: number) => (d < 0.05 ? "exactly" : `within ${d.toFixed(1)}%`);
+
 export function ResultsFigures({ e }: { e: Enrichment }) {
   if (!e.metrics || !e.metrics.length) return <p className="slip-line ink2">{e.note || "Numbers not available yet."}</p>;
   const m = e.margins || {};
@@ -54,9 +56,9 @@ export function ResultsFigures({ e }: { e: Enrichment }) {
         ) : e.verified ? (
           e.verified.ok ? (
             e.verified.current_checked === false ? (
-              <><span className="ok">✓ Earlier quarters match screener.in</span> (within {e.verified.revenue_diff_pct.toFixed(1)}%); this quarter is too new to cross-check. </>
+              <><span className="ok">✓ Earlier quarters match screener.in</span> {within(e.verified.revenue_diff_pct)}; this quarter is too new to cross-check. </>
             ) : (
-              <><span className="ok">✓ Cross-checked.</span> Revenue matches screener.in within {e.verified.revenue_diff_pct.toFixed(1)}%. </>
+              <><span className="ok">✓ Cross-checked.</span> Revenue matches screener.in {within(e.verified.revenue_diff_pct)}. </>
             )
           ) : (
             <><span className="warn">Check this.</span> Revenue differs from screener.in by {e.verified.revenue_diff_pct.toFixed(1)}%. </>

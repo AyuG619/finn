@@ -242,8 +242,19 @@ export default function Brief({ focusId }: { focusId?: string }) {
 }
 
 function shortCat(label: string): string {
+  if (label === label.toUpperCase()) return label; // M&A, AGM / EGM
   const l = label.toLowerCase();
   return l === "litigation & regulatory" ? "regulatory matter" : l === "routine paperwork" ? "filing" : l;
+}
+
+/** "Maruti Suzuki results and M&A", not "Maruti Suzuki results and Maruti Suzuki M&A". */
+function headlineLabels(items: DigestItem[]): string[] {
+  const by = new Map<string, string[]>();
+  for (const x of items) {
+    const part = x.type === "move" ? pct(x.change_pct) : shortCat(x.category_label);
+    by.set(x.name, [...(by.get(x.name) || []), part]);
+  }
+  return Array.from(by.entries()).map(([name, parts]) => `${name} ${listJoin(parts)}`);
 }
 
 export function listJoin(parts: string[]): string {
@@ -266,7 +277,7 @@ function Headline({ digest, unseen }: { digest: Digest | null; unseen: number })
   if (!digest) return <h1 className="h-brief">Reading today's filings…</h1>;
   const top = digest.top;
   if (!top.length) return <h1 className="h-brief"><span className="lead">Nothing needs you.</span></h1>;
-  const labels = top.slice(0, 3).map((x) => (x.type === "move" ? `${x.name} ${pct(x.change_pct)}` : `${x.name} ${shortCat(x.category_label)}`));
+  const labels = headlineLabels(top.slice(0, 3));
   if (top.length > 3) labels.push(`${top.length - 3} more`);
   return (
     <h1 className="h-brief">

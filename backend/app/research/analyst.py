@@ -246,8 +246,24 @@ def evidence_predates_due(p: dict) -> bool:
     return bool(cited) and all(_span(c)[1] < _span(due)[0] for c in cited)
 
 
-def merge_promises(computed: list[dict], model_promises: list[dict]) -> list[dict]:
-    """Computed verdicts win; model promises that duplicate them are dropped."""
+def quarter_index(qe: str) -> int:
+    """Fiscal-quarter index of a quarter-end date (same scale as ``_span``)."""
+    y, m = int(qe[:4]), int(qe[5:7])
+    fy, q = (y + 1, (m - 1) // 3) if m >= 4 else (y, 4)
+    return (fy % 100) * 4 + q - 1
+
+
+def period_open(p: dict, latest_quarter_end: str | None) -> bool:
+    """True when the promised period ends after the latest reported quarter: too early for a verdict."""
+    due = resolve_period(str(p.get("due") or ""), p.get("made_in") or "")
+    if not due or not latest_quarter_end:
+        return False
+    return _span(due)[1] > quarter_index(latest_quarter_end)
+
+
+def merge_promises(computed: list[dict], model_promises: list[dict], latest_quarter_end: str | None = None) -> list[dict]:
+    """Computed verdicts win; model promises that duplicate them are dropped. A model can't call a
+    promise missed (or kept) before its period has been reported, nor on evidence from before it."""
     by_id = {c["id"]: c for c in computed}
     out = list(computed)
     for p in model_promises or []:
@@ -265,6 +281,9 @@ def merge_promises(computed: list[dict], model_promises: list[dict]) -> list[dic
         if p["outcome"] in ("delivered", "missed", "partly") and evidence_predates_due(p):
             p["outcome"] = "pending"
             p["evidence"] = f"Not yet judgeable: the evidence cited is from before the promised period. ({p.get('evidence')})"
+        elif p["outcome"] in ("missed", "partly") and period_open(p, latest_quarter_end):
+            p["outcome"] = "pending"
+            p["evidence"] = f"Period not over yet. So far: {p.get('evidence') or 'no clear evidence'}"
         p["computed"] = False
         out.append(p)
 

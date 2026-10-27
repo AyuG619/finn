@@ -543,6 +543,11 @@ async def complete(
         ladder = [s for s in ladder if s.search_only == search_agents]
     if not borrow:  # stay on this tier's own models (e.g. when a later step will escalate anyway)
         ladder = [s for s in ladder if s.tier == tier]
+    if document:
+        # Models that can see the whole document go first: a strong model reading a truncated document
+        # is worse than a lighter one reading all of it. (Stable sort keeps the preference order.)
+        need = estimate_tokens(system + prompt + document) + 300
+        ladder.sort(key=lambda sl: sl.max_input_tokens < need)
     if not ladder:
         raise LLMUnavailable(f"no model available for tier={tier} pdf={pdf is not None} search={search}")
     errors: list[str] = []

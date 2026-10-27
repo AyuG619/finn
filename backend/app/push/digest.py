@@ -184,7 +184,8 @@ def short_label(item: dict) -> str:
     if cat == "management_change":
         role = {"top": "top-level", "auditor": "auditor"}.get(item.get("subtype") or "", "")
         return f"{name} {role + ' ' if role else ''}management change".replace("  ", " ")
-    return f"{name}: {CATEGORIES.get(cat, cat).lower()}"
+    label = CATEGORIES.get(cat, cat)
+    return f"{name}: {label if label.isupper() else label.lower()}"
 
 
 # ------------------------------------------------------------------ build
@@ -317,7 +318,7 @@ async def build(prefs: Prefs) -> dict:
         syms = {h["symbol"]: h for h in holdings}
         for ev in cal:
             h = syms.get(ev["symbol"])
-            if h and ev["date"] >= now.date().isoformat():
+            if h and ev["date"] >= now.date().isoformat() and re.search(r"result", f"{ev['purpose']} {ev['desc']}", re.I):
                 upcoming.append({"symbol": h["symbol"], "name": h["name"], "date": ev["date"], "filing_id": None, "weight": h.get("weight", 0),
                                  "purpose": ev["purpose"]})
     except Exception as exc:  # noqa: BLE001
@@ -337,6 +338,11 @@ async def build(prefs: Prefs) -> dict:
     )
     active = {x["symbol"] for x in everything}
     quiet = [h["name"] for h in holdings if h["symbol"] not in active]
+    def reported(u: dict) -> bool:  # the results for that meeting are already out
+        return any(x["category"] == "results" and x.get("subtype") in ("filing", "outcome") and x["time"][:10] >= u["date"]
+                   for x in per_symbol_filings.get(u["symbol"], []))
+
+    upcoming = [u for u in upcoming if not reported(u)]
     upcoming = sorted({(u["symbol"], u["date"]): u for u in upcoming}.values(), key=lambda u: (u["date"], -u["weight"]))[:12]
     alerts = [x for x in top + notable if x["type"] == "move" or (x.get("watched") and x["tier"] == "high")]
 

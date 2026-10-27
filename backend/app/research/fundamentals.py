@@ -167,13 +167,25 @@ def financial_snapshot(page: dict) -> dict:
     ]
     if not bank:
         metrics.append({"label": "ROCE", "value": r.get("roce"), "unit": "%"})
-    metrics += [
-        {"label": "Revenue (TTM)", "value": ttm_rev, "unit": "cr"},
-        {"label": ("Financing profit" if bank else "Operating profit") + " (TTM)", "value": ttm_op, "unit": "cr",
-         "hint": f"margin {ttm_op / ttm_rev * 100:.1f}%" if ttm_op is not None and ttm_rev else None},
-        {"label": "PAT (TTM)", "value": ttm_pat, "unit": "cr",
-         "hint": f"margin {ttm_pat / ttm_rev * 100:.1f}%" if ttm_pat is not None and ttm_rev else None},
-    ]
+    if bank:
+        # Screener's "financing profit" nets provisions and opex off interest earned but leaves out fee
+        # income, so it is often negative for a healthy bank. Net interest income is the honest headline.
+        ttm_int = _ttm(pl, "Interest")
+        nii = ttm_rev - ttm_int if ttm_rev is not None and ttm_int is not None else None
+        metrics += [
+            {"label": "Interest earned (TTM)", "value": ttm_rev, "unit": "cr"},
+            {"label": "Net interest income (TTM)", "value": nii, "unit": "cr",
+             "hint": f"{nii / ttm_rev * 100:.0f}% of interest earned" if nii is not None and ttm_rev else None},
+            {"label": "PAT (TTM)", "value": ttm_pat, "unit": "cr"},
+        ]
+    else:
+        metrics += [
+            {"label": "Revenue (TTM)", "value": ttm_rev, "unit": "cr"},
+            {"label": "Operating profit (TTM)", "value": ttm_op, "unit": "cr",
+             "hint": f"margin {ttm_op / ttm_rev * 100:.1f}%" if ttm_op is not None and ttm_rev else None},
+            {"label": "PAT (TTM)", "value": ttm_pat, "unit": "cr",
+             "hint": f"margin {ttm_pat / ttm_rev * 100:.1f}%" if ttm_pat is not None and ttm_rev else None},
+        ]
     if not bank and bs:
         eq = _last(_series(bs, "Equity Capital"))[1]
         res = _last(_series(bs, "Reserves"))[1]
@@ -193,7 +205,9 @@ def financial_snapshot(page: dict) -> dict:
     if lq:
         parts = [f"{lq['label']}: revenue {_fmt_pct(lq['revenue_yoy'])} YoY", f"PAT {_fmt_pct(lq['pat_yoy'])} YoY"]
         tone = "good" if (lq["pat_yoy"] or 0) > 10 and (lq["revenue_yoy"] or 0) > 0 else "bad" if (lq["pat_yoy"] or 0) < -5 else "neutral"
-        signals.append(_sig(tone, ", ".join(parts) + (f"; {'financing' if bank else 'operating'} margin {lq['opm']:.1f}%" if lq.get("opm") is not None else "")))
+        if bank:
+            parts[0] = f"{lq['label']}: interest earned {_fmt_pct(lq['revenue_yoy'])} YoY"
+        signals.append(_sig(tone, ", ".join(parts) + (f"; operating margin {lq['opm']:.1f}%" if lq.get("opm") is not None and not bank else "")))
         idx = qr.index(lq)
         base = qr[idx - 4] if idx >= 4 else None
         others = sorted(x["other_income"] for x in qr if x.get("other_income") is not None and x is not base)
