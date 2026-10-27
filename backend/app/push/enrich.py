@@ -19,7 +19,7 @@ from .. import cache
 from ..llm import prompts
 from ..llm.router import LLMUnavailable, available, complete
 from ..sources import pdfs, screener
-from .classify import CATEGORIES, amounts_in_crore
+from .classify import CATEGORIES, amounts_in_crore, share_text
 
 log = logging.getLogger("finn.enrich")
 
@@ -772,7 +772,7 @@ def apply_refinement(item: dict, card: dict | None) -> None:
             if pct < 0.05:
                 item["score"] = min(item["score"], 38)
                 amt = f"₹{biggest * 100:,.0f} lakh" if biggest < 1 else f"₹{biggest:,.0f} cr"
-                item["why"] = item.get("why", []) + [f"{amt} is {pct:.3f}% of market cap"]
+                item["why"] = item.get("why", []) + [f"{amt} is {share_text(pct)} of market cap"]
 
 
 AMOUNT_CATEGORIES = ("m_and_a", "fund_raise", "press_release", "litigation", "capex")

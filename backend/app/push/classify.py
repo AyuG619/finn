@@ -367,6 +367,13 @@ USD_INR = 88.0
 EUR_INR = 102.0
 
 
+def share_text(pct: float) -> str:
+    """A share of market cap, readable at any size: "<0.001%", "0.042%", "3.10%"."""
+    if pct < 0.001:
+        return "<0.001%"
+    return f"{pct:.3f}%" if pct < 0.1 else f"{pct:.2f}%"
+
+
 def amounts_in_crore(text: str) -> list[float]:
     """Monetary amounts mentioned in a filing, converted to INR crore (approximate for FX)."""
     out = []
@@ -434,7 +441,7 @@ def materiality(f: dict, c: Classification, market_cap_cr: float | None = None) 
             elif pct < 0.05:
                 score -= 12
             amt = f"₹{biggest / 100000:.2f} lakh cr" if biggest >= 100000 else f"₹{biggest:,.0f} cr"
-            why.append(f"{amt} ≈ {pct:.2f}% of market cap")
+            why.append(f"{amt} ≈ {share_text(pct)} of market cap")
     if c.category == "credit_rating":
         d = rating_direction(low)
         if d == "downgrade":

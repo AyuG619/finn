@@ -492,7 +492,7 @@ def test_refinement_demotes_immaterial_amounts_found_in_the_filing():
     card = {"kind": "summary", "one_liner": "Incorporates OSCOE Foundation as a wholly owned subsidiary for INR 100,000.",
             "key_facts": [{"label": "Cost of Subscription", "value": "INR 100,000"}], "materiality": 2}
     apply_refinement(item, card)
-    assert item["score"] == 38 and item["amount_cr"] == 0.01 and item["why"][-1].startswith("₹1 lakh is 0.000")
+    assert item["score"] == 38 and item["amount_cr"] == 0.01 and item["why"][-1] == "₹1 lakh is <0.001% of market cap"
     big = {"category": "m_and_a", "score": 74, "why": [], "market_cap_cr": 40000.0, "needs_model": False}
     apply_refinement(big, {"kind": "summary", "one_liner": "Acquires X for ₹4,000 crore", "materiality": 4})
     assert big["score"] == 74 and big["amount_pct_mcap"] == 10.0
