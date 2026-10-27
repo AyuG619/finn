@@ -27,7 +27,9 @@ export default function AskBar({ route }: { route: Route }) {
 
   useEffect(() => () => rec.current?.abort?.(), []);
 
-  const resolveCompany = async (name: string) => {
+  const HELP = "Try “research Trent”, “show last week”, “alert me on 3% moves”, or open a company and ask about it.";
+
+  const resolveCompany = async (name: string, strict = false) => {
     const n = name.trim().replace(/[?.!]+$/, "");
     if (/^[A-Z0-9&-]{2,15}$/.test(n)) return go("research", n);
     try {
@@ -36,7 +38,8 @@ export default function AskBar({ route }: { route: Route }) {
     } catch {
       /* fall through */
     }
-    go("research", n.toUpperCase().replace(/\s+/g, ""));
+    if (strict || /\s/.test(n)) return ui.toast(`No company matches “${n}”. ${HELP}`);
+    go("research", n.toUpperCase());
   };
 
   const handle = async (raw: string) => {
@@ -45,12 +48,18 @@ export default function AskBar({ route }: { route: Route }) {
     const low = t.toLowerCase();
     setText("");
     let m: RegExpMatchArray | null;
-    if ((m = low.match(/(?:price|move|moves|moving|falls?|rises?|drops?)[^\d]{0,30}(\d+(?:\.\d+)?)\s*(?:%|percent)/))) {
+    if (
+      (m = low.match(/(?:price|move|moves|moving|falls?|rises?|drops?|alert)[^\d]{0,30}(\d+(?:\.\d+)?)\s*(?:%|percent)/)) ||
+      (m = low.match(/(\d+(?:\.\d+)?)\s*(?:%|percent)\s*(?:price\s*)?(?:move|moves|moving|change|changes|swing|swings|fall|falls|rise|rises|drop|drops)/))
+    ) {
       setPrefs({ price_pct: Math.min(20, Math.max(0.5, Number(m[1]))) });
       ui.toast(`Price alerts now trigger at ±${m[1]}% a day.`);
       return go("watch");
     }
-    if ((m = low.match(/volume[^\d]{0,30}(\d+(?:\.\d+)?)\s*(?:x|×|times)/))) {
+    if (
+      (m = low.match(/volume[^\d]{0,30}(\d+(?:\.\d+)?)\s*(?:x|×|times)/)) ||
+      (m = low.match(/(\d+(?:\.\d+)?)\s*(?:x|×|times)\s*(?:the\s*)?(?:usual\s*|normal\s*|average\s*)?volume/))
+    ) {
       setPrefs({ vol_x: Math.min(10, Math.max(1.5, Number(m[1]))) });
       ui.toast(`Volume alerts now trigger at ${m[1]}× usual volume.`);
       return go("watch");
@@ -93,8 +102,8 @@ export default function AskBar({ route }: { route: Route }) {
       }
       return;
     }
-    // A name in a sentence ("how is asian paints doing") -> research it.
-    return resolveCompany(t.replace(/^(how is|how's|what about|and)\s+/i, "").replace(/\s+(doing|now|today)\??$/i, ""));
+    // A name in a sentence ("how is asian paints doing") -> research it; anything else -> help.
+    return resolveCompany(t.replace(/^(how is|how's|what about|and)\s+/i, "").replace(/\s+(doing|now|today)\??$/i, ""), true);
   };
 
   const listen = () => {
