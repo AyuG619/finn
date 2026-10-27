@@ -331,8 +331,38 @@ async def diag():
     async def models():
         return await llm.discover(force=True)
 
+    async def bse_pdf():
+        url = "https://www.bseindia.com/xml-data/corpfiling/AttachHis/c9d3d96a-8b04-4b41-b454-3f98d1f90702.pdf"
+        r = await http.request("GET", url, retries=0, timeout=30)
+        return f"{len(r.content)} bytes, pdf={r.content[:4] == b'%PDF'}"
+
+    async def bse_api_alt():
+        r = await http.request("GET", "https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w", retries=0,
+                               params={"pageno": "1", "strCat": "-1", "strPrevDate": "20261020", "strScrip": "500325", "strSearch": "P", "strToDate": "20261027", "strType": "C", "subcategory": "-1"},
+                               headers={"Accept": "application/json", "Referer": "https://www.bseindia.com/corporates/ann.html", "Origin": "https://www.bseindia.com",
+                                        "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty"})
+        return r.text[:80]
+
+    async def nse_pdf():
+        rows = await nse._fetch("INFY", prices.now_ist() - timedelta(days=30), prices.now_ist())
+        url = next((r["pdf_url"] for r in rows if r.get("pdf_url")), None)
+        if not url:
+            return "no pdf in sample"
+        data = await nse.session.get_bytes(url)
+        return f"{url[-50:]}: {len(data)} bytes, pdf={data[:4] == b'%PDF'}"
+
+    async def nse_ar():
+        ars = await nse.annual_reports("INFY")
+        return f"{len(ars)} reports, latest {ars[0] if ars else None}"
+
+    async def screener_quarter_pdf():
+        r = await http.request("GET", "https://www.screener.in/company/source/quarter/1489/9/2026/", retries=0, timeout=30)
+        return f"{r.url}"[:120] + f" {len(r.content)} bytes"
+
     results = await asyncio.gather(
-        probe("yahoo", yahoo()), probe("bse", bse_ann()), probe("screener", scr()), probe("nse", nse_ann()), probe("llm", models())
+        probe("yahoo", yahoo()), probe("bse", bse_ann()), probe("screener", scr()), probe("nse", nse_ann()), probe("llm", models()),
+        probe("bse_pdf", bse_pdf()), probe("bse_api_alt", bse_api_alt()), probe("nse_pdf", nse_pdf()), probe("nse_annual_reports", nse_ar()),
+        probe("screener_quarter_pdf", screener_quarter_pdf()),
     )
     return dict(results)
 

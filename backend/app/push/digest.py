@@ -6,11 +6,13 @@ import asyncio
 import logging
 import math
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 from .. import cache
+from ..config import FILINGS_ORDER
 from ..portfolio import BY_SYMBOL, PORTFOLIO
 from ..sources import bse, nse, prices, screener
 from ..sources.prices import IST, now_ist
@@ -79,32 +81,56 @@ async def _market_cap(symbol: str) -> float | None:
         return None
 
 
+async def _from_bse(h: dict, days: int) -> list[dict]:
+    if not h.get("bse_code"):
+        raise RuntimeError("no BSE code")
+    return await bse.announcements(h["bse_code"], days)
+
+
+async def _from_nse(h: dict, days: int) -> list[dict]:
+    return await nse.announcements(h["symbol"], days)
+
+
+async def _from_screener(h: dict, days: int) -> list[dict]:
+    page = await screener.company_page(h["symbol"])
+    out = []
+    for a in (page.get("documents") or {}).get("announcements") or []:
+        out.append({
+            "id": f"SCR:{h['symbol']}:{a['url'][-40:]}", "source": "screener", "bse_code": "", "company": h["name"],
+            "time": a.get("time"), "subject": a["title"], "raw_subject": a["title"], "detail": "",
+            "exchange_category": "", "exchange_subcategory": "", "critical": False, "pdf_url": a["url"],
+            "attachment": a["url"], "pdf_size": None,
+        })
+    return out
+
+
+_SOURCES = {"nse": _from_nse, "bse": _from_bse, "screener": _from_screener}
+_failures: dict[str, float] = {}
+
+
+def _order() -> list[str]:
+    """Configured order, but a source that failed in the last 10 minutes goes to the back."""
+    base = [s for s in FILINGS_ORDER if s in _SOURCES] or ["nse", "bse"]
+    if "screener" not in base:
+        base.append("screener")
+    now = time.time()
+    healthy = [s for s in base if now - _failures.get(s, 0) > 600]
+    return healthy + [s for s in base if s not in healthy]
+
+
 async def _filings_for(h: dict, days: int) -> tuple[list[dict], str | None]:
+    errors = []
     async with _FETCH_SEM:
-        if h.get("bse_code"):
+        for name in _order():
             try:
-                return await bse.announcements(h["bse_code"], days), None
-            except Exception as exc:  # noqa: BLE001
-                err = f"BSE: {exc}"
-        else:
-            err = "no BSE code"
-        try:
-            return await nse.announcements(h["symbol"], days), None
-        except Exception as exc:  # noqa: BLE001
-            err = f"{err}; NSE: {exc}"
-        try:
-            page = await screener.company_page(h["symbol"])
-            out = []
-            for a in (page.get("documents") or {}).get("announcements") or []:
-                out.append({
-                    "id": f"SCR:{h['symbol']}:{a['url'][-40:]}", "source": "screener", "bse_code": "", "company": h["name"],
-                    "time": a.get("time"), "subject": a["title"], "raw_subject": a["title"], "detail": "",
-                    "exchange_category": "", "exchange_subcategory": "", "critical": False, "pdf_url": a["url"],
-                    "attachment": a["url"], "pdf_size": None,
-                })
-            return out, err
-        except Exception as exc:  # noqa: BLE001
-            return [], f"{err}; screener: {exc}"
+                rows = await _SOURCES[name](h, days)
+                if name != "screener" or rows:
+                    return rows, ("; ".join(errors) or None)
+            except Exception as exc:  # noqa: BLE001 - try the next source
+                if name != "screener" and "no BSE code" not in str(exc):
+                    _failures[name] = time.time()
+                errors.append(f"{name}: {str(exc)[:120]}")
+    return [], "; ".join(errors)
 
 
 # ------------------------------------------------------------------ helpers

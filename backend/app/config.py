@@ -34,6 +34,10 @@ VAPID_PRIVATE_KEY = _env("VAPID_PRIVATE_KEY")
 VAPID_PUBLIC_KEY = _env("VAPID_PUBLIC_KEY")
 VAPID_SUBJECT = _env("VAPID_SUBJECT", "mailto:finn-demo@example.com")
 
+# Which exchange feed to try first for announcements. NSE answers from the Render host; BSE's API
+# refuses it. Order is adaptive at runtime (a failing source drops to the back for 10 minutes).
+FILINGS_ORDER = [s.strip() for s in _env("FINN_FILINGS_ORDER", "nse,bse").split(",") if s.strip()]
+
 HTTP_TIMEOUT = float(_env("FINN_HTTP_TIMEOUT", "25") or "25")
 USER_AGENT = _env(
     "FINN_USER_AGENT",

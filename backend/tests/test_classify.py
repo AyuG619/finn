@@ -68,6 +68,50 @@ CASES = [
 ]
 
 
+# Real NSE descriptions and (cleaned) attachment texts from 26 Oct 2026.
+NSE_CASES = [
+    ("Outcome of Board Meeting", "Smc Global Securities Limited has submitted to the Exchange, the financial results for the period ended September 30, 2026.", "results", "high"),
+    ("Outcome of Board Meeting", "One 97 Communications Limited has informed the Exchange regarding Outcome of Board Meeting held on October 26, 2026.", "unclassified", "notable"),
+    ("Analysts/Institutional Investor Meet/Con. Call Updates", "Intimation of Investors Conference Call on Thursday, October 29, 2026.", "earnings_call", "routine"),
+    ("Analysts/Institutional Investor Meet/Con. Call Updates", "We hereby inform you that a Physical Meet is scheduled to be held with the InstitutionalInvestors/Analyst Groups on Thursday, October 29, 2026 in Mumbai.", "investor_meetings", "routine"),
+    ("Press Release", 'LEAP India Limited has informed the Exchange regarding a press release dated October 26, 2026, titled "Press Release for Unaudited Financial Results for the quarter and h', "results", "routine"),
+    ("Copy of Newspaper Publication", "Hindustan Unilever Limited has informed the Exchange about Copy of Newspaper Publication", "unclassified", "routine"),
+    ("Appointment", "R Systems International Limited has informed the Exchange regarding Appointment of Mr Vikas Basra as Chief AI Officer of the company w.e.f. October 26, 2026.", "management_change", "notable"),
+    ("Appointment", "AceVector Limited has informed the Exchange regarding Appointment of Mr. Madhvendra Shukla as Company Secretary & Compliance Officer of the company w.e.f. October 26, 202", "management_change", "routine"),
+    ("Resignation of Director/KMP/SMP", "Aavas Financiers Limited has informed the Exchange about Resignation of Director/KMP/SMP", "management_change", "notable"),
+    ("Resignation", "Baazar Style Retail Limited has informed the Exchange regarding Resignation of Mr Rishabh Narendra Jain as Non- Executive Independent Director of the company w.e.f. Octob", "management_change", "notable"),
+    ("Allotment of Securities", "Persistent Systems Limited has informed the Exchange regarding allotment of 7683981 securities pursuant to Qualified Institution Placement at its meeting held on October", "fund_raise", "notable"),
+    ("Corporate Insolvency Resolution Process", "Intimation of Appointment of Resolution Professional of Shrenik Limited (In CIRP) under Section 22 of the Insolvency and Bankruptcy Code, 2016", "litigation", "high"),
+    ("Trading Window", "Xtranet Technologies Limited has informed the Exchange regarding the Trading Window closure pursuant to SEBI (Prohibition of Insider Trading) Regulations, 2015", "unclassified", "routine"),
+    ("Certificate under SEBI (Depositories and Participants) Regulations, 2018", "Bharti Airtel Limited has informed the Exchange about Certificate under Regulation 74(5)", "unclassified", "routine"),
+    ("Pendency of Litigation(s)/dispute(s) or the outcome impacting the Company", "Ircon International Limited has informed the Exchange about Pendency of Litigation(s)/dispute(s) or the outcome impacting the Company", "litigation", "notable"),
+    ("Capacity addition", "Ather Energy Limited has informed the Exchange that the Board at the meeting held today has considered and approved proposals for the enhancement of manufacturing capacit", "capex", "notable"),
+    ("Board Meeting Intimation", "Infosys Limited has informed the Exchange about Board Meeting to be held on 16-Jan-2027 to consider financial results", "results", "routine"),
+    ("General Updates", "Apollo Micro Systems Limited has informed the Exchange about General Updates", "unclassified", "routine"),
+    ("Integrated Filing- Financial", "Integrated Filing (Financial) for the quarter and half-year ended 30th September, 2026.", "results", "high"),
+]
+
+
+@pytest.mark.parametrize("desc,text,exp_cat,exp_tier", NSE_CASES)
+def test_real_nse_filings(desc, text, exp_cat, exp_tier):
+    from app.sources.nse import normalise
+
+    row = {"an_dt": "26-Oct-2026 18:00:00", "desc": desc, "attchmntText": text, "seq_id": "1", "sm_name": "X", "attchmntFile": "https://x/y.pdf"}
+    f = normalise(row, "X")
+    c = classify(f)
+    score, why = materiality(f, c, None)
+    assert c.category == exp_cat, (f, c, why)
+    assert tier(score) == exp_tier, (f, c, score, why)
+
+
+def test_nse_clean_text():
+    from app.sources.nse import clean_text
+
+    assert clean_text("R Systems International Limited has informed the Exchange regarding Appointment of Mr Vikas Basra as Chief AI Officer.", "Appointment") == "Appointment of Mr Vikas Basra as Chief AI Officer"
+    assert clean_text("Hindustan Unilever Limited has informed the Exchange about Copy of Newspaper Publication", "Copy of Newspaper Publication") == ""
+    assert clean_text("Smc Global Securities Limited has submitted to the Exchange, the financial results for the period ended September 30, 2026.", "Outcome of Board Meeting") == "The financial results for the period ended September 30, 2026"
+
+
 @pytest.mark.parametrize("cat,sub,subject,detail,critical,mcap,exp_cat,exp_tier", CASES)
 def test_real_filings(cat, sub, subject, detail, critical, mcap, exp_cat, exp_tier):
     f = {"exchange_category": cat, "exchange_subcategory": sub, "subject": subject, "detail": detail, "critical": critical}

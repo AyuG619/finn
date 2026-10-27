@@ -100,6 +100,60 @@ SUBCATEGORY_MAP: dict[str, tuple[str, str | None, int]] = {
     "board meeting cancelled": ("unclassified", "board_meeting", 20),
 }
 
+# NSE's own announcement descriptions (used when NSE is the feed; there is no sub-category).
+NSE_DESC_MAP: dict[str, tuple[str, str | None, int]] = {
+    "financial result updates": ("results", "filing", 85),
+    "integrated filing- financial": ("results", "filing", 85),
+    "integrated filing - financial": ("results", "filing", 85),
+    "investor presentation": ("results", "deck", 38),
+    "copy of newspaper publication": ("unclassified", "newspaper", 4),
+    "shareholders meeting": ("agm_egm", None, 14),
+    "corrigendum": ("unclassified", None, 10),
+    "certificate under sebi (depositories and participants) regulations, 2018": ("unclassified", None, 2),
+    "monitoring agency report": ("unclassified", None, 6),
+    "trading window": ("unclassified", None, 3),
+    "record date": ("dividend", "record_date", 22),
+    "allotment of securities": ("fund_raise", "allotment", 35),
+    "corporate insolvency resolution process": ("litigation", "insolvency", 72),
+    "esop/esos/esps": ("unclassified", None, 5),
+    "options to purchase securities": ("unclassified", None, 5),
+    "statement of deviation(s) or variation(s) under reg. 32": ("unclassified", None, 8),
+    "bagging/receiving of orders/contracts": ("press_release", "order", 50),
+    "issue of securities": ("fund_raise", None, 55),
+    "amendment to aoa/moa": ("unclassified", None, 12),
+    "committee meeting updates": ("unclassified", None, 15),
+    "dividend": ("dividend", None, 36),
+    "credit rating": ("credit_rating", None, 52),
+    "credit rating- new": ("credit_rating", None, 45),
+    "credit rating- revision": ("credit_rating", None, 62),
+    "capacity addition": ("capex", None, 62),
+    "commencement of commercial production/operations": ("capex", None, 62),
+    "extension  of financial year": ("unclassified", None, 20),
+    "extension of financial year": ("unclassified", None, 20),
+    "giving guarantees/indemnity/ becoming a surety for third party": ("unclassified", None, 30),
+    "effect(s) on listed entity due to changed regulatory  framework applicable": ("litigation", "regulatory", 52),
+    "effect(s) on listed entity due to changed regulatory framework applicable": ("litigation", "regulatory", 52),
+    "pendency of litigation(s)/dispute(s) or the outcome impacting the company": ("litigation", None, 65),
+    "action(s) initiated or orders passed": ("litigation", None, 66),
+    "product launch": ("press_release", None, 40),
+    "buyback": ("fund_raise", "buyback", 70),
+    "acquisition": ("m_and_a", None, 70),
+    "amalgamation/merger": ("m_and_a", None, 66),
+    "scheme of arrangement": ("m_and_a", None, 66),
+    "agreements": ("m_and_a", "agreement", 50),
+    "sale or disposal-xbrl": ("m_and_a", None, 62),
+    "qualified institutional placement": ("fund_raise", None, 74),
+    "preferential issue": ("fund_raise", None, 68),
+    "rights issue": ("fund_raise", None, 72),
+    "bonus": ("bonus_split", None, 62),
+    "spurt in volume": ("press_release", "clarification", 55),
+    "clarification - financial results": ("results", "ancillary", 40),
+}
+NSE_MGMT_DESCS = {
+    "appointment", "resignation", "cessation", "change in management", "change in director(s)", "demise",
+    "resignation of director/kmp/smp", "change in directors/ key managerial personnel/ auditor/ compliance officer/ share transfer agent",
+}
+
 # Keyword rules for generic buckets: first match wins, so order matters (specific before broad).
 _R = lambda p: re.compile(p, re.I)  # noqa: E731
 KEYWORD_RULES: list[tuple[re.Pattern, str, str | None, int]] = [
@@ -192,7 +246,9 @@ def classify(f: dict) -> Classification:
         if _RESULTS_ANCILLARY_RE.search(f.get("subject", "")):
             return Classification("results", "ancillary", 30, "results-related publication")
         return Classification("results", "filing", 92, "results filing (exchange category)")
-    if sub in ("board meeting", "board meeting rescheduled") or (cat == "board meeting" and sub != "outcome of board meeting"):
+    if sub in ("board meeting", "board meeting rescheduled") or (
+        cat.startswith("board meeting") and "outcome" not in cat and sub != "outcome of board meeting"
+    ):
         if _RESULTS_RE.search(low) or re.search(r"result|financial statement|financials|quarter|half[- ]year|year ended", low):
             return Classification("results", "date", 34, "board meeting to approve results")
         if _RESULTS_DATE_RE.search(low) and re.search(r"dividend|bonus|split|buy-?back|fund|qip|preferential|rights", low):
@@ -227,6 +283,20 @@ def classify(f: dict) -> Classification:
         if sub == "analyst / investor meet" and re.search(r"earnings|conference call|con-?call|results", low):
             return Classification("earnings_call", "notice", 18, "earnings call scheduled")
         return Classification(category, subtype, base, f"exchange tag: {f.get('exchange_subcategory')}")
+
+    # 2b. NSE descriptions.
+    if not sub and cat in NSE_MGMT_DESCS:
+        role, _ = management_role(f.get("detail") or "")
+        if role == "other" or re.search(r"director/kmp/smp|about (resignation|appointment|cessation|change in management)\s*$", low):
+            return Classification("management_change", "other", 60, "management change (role in filing)", needs_model=True)
+        return Classification("management_change", role, MGMT_SCORES[role], f"management change ({role.replace('_', ' ')})")
+    if not sub and cat in NSE_DESC_MAP:
+        category, subtype, base = NSE_DESC_MAP[cat]
+        if category == "results" and subtype == "deck" and not _RESULTS_RE.search(low) and "quarter" not in low:
+            return Classification("investor_meetings", "deck", 20, "investor presentation")
+        if subtype == "allotment" and re.search(r"qualified institution|\bqip\b|preferential|rights", low):
+            return Classification("fund_raise", None, 60, "allotment completing a fund raise")
+        return Classification(category, subtype, base, f"exchange tag: {f.get('exchange_category')}")
 
     # 3. Insider / SAST bucket on BSE.
     if cat.startswith("insider trading") or "sast" in sub:
