@@ -21,6 +21,8 @@ Rules:
 - Report the unit printed in the statement header ("crore", "lakh", "million", "thousand" or "rupees").
 - Losses / negative values (often shown in brackets) must be negative numbers.
 - "exceptional_items" = the signed effect on profit (a gain is positive, a loss/charge is negative); null if none.
+- "share_of_associates" = share of profit/(loss) of associates and joint ventures added before PBT, if shown; else null.
+- "total_expenses" = the "Total expenses" line exactly as printed (it normally includes finance costs and depreciation).
 - "net_profit" = profit for the period (after tax, including non-controlling interests). "net_profit_owners" = the portion
   attributable to owners/shareholders of the parent, if shown.
 - For banks/NBFCs fill interest_earned, interest_expended, operating_profit_before_provisions and provisions when shown.
@@ -32,7 +34,7 @@ Return JSON exactly in this shape:
  "columns": {
    "current": {"revenue_from_operations": number|null, "other_income": number|null, "total_income": number|null,
                "total_expenses": number|null, "finance_costs": number|null, "depreciation": number|null,
-               "exceptional_items": number|null, "profit_before_tax": number|null, "tax_expense": number|null,
+               "exceptional_items": number|null, "share_of_associates": number|null, "profit_before_tax": number|null, "tax_expense": number|null,
                "net_profit": number|null, "net_profit_owners": number|null, "interest_earned": number|null,
                "interest_expended": number|null, "operating_profit_before_provisions": number|null, "provisions": number|null},
    "previous_quarter": {same keys},
@@ -57,6 +59,29 @@ Return JSON:
    "effective_date": str|null, "reason": str|null (resignation reason exactly as stated),
    "profile_from_filing": str|null (the brief profile the filing discloses, condensed to <= 60 words, keep employers, roles, years, education)}}],
  "summary": str (<= 20 words, plain English, e.g. "CFO Rupali Ghosh resigns; Shraddha Pachare appointed CFO from 27 Oct")}}"""
+
+BIO_FROM_RESULTS_SYSTEM = (
+    "You write a concise professional background of a business executive for an investor, using ONLY the web search "
+    "results provided (titles, snippets and URLs) and the company's own disclosure. Use a result only if it clearly refers "
+    "to the same person (same name and a matching employer, role or career). If nothing reliable is there, say found=false. "
+    "Never invent employers, titles or dates."
+)
+
+BIO_FROM_RESULTS_PROMPT = """Person: {name}
+New role: {role} at {company} (listed in India)
+Company's own disclosure: {profile}
+
+Search results:
+{results}
+
+Return JSON only:
+{{"found": true|false,
+  "headline": "<= 12 words",
+  "background": "2-3 sentences: previous employers with roles and approximate years, domain expertise, qualifications",
+  "previous_roles": [{{"org": str, "title": str, "years": str|null}}],
+  "linkedin_url": str|null (only a linkedin.com URL from the results that is clearly this person),
+  "used_results": [int] (indexes of the results you relied on),
+  "confidence": "high"|"medium"|"low"}}"""
 
 BIO_SYSTEM = (
     "You write concise professional backgrounds of business executives for investors. Use Google Search. Prefer "

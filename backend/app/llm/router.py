@@ -54,6 +54,7 @@ class ModelSlot:
     supports_pdf: bool = False
     supports_search: bool = False
     cooldown_until: float = 0.0
+    search_cooldown_until: float = 0.0  # grounding has its own (often zero) free quota
     calls: deque = field(default_factory=deque)
 
     @property
@@ -223,7 +224,7 @@ def status() -> dict:
     return {
         "configured": {"gemini": bool(GEMINI_API_KEY), "groq": bool(GROQ_API_KEY)},
         "tiers": {
-            t: [{"model": s.key, "cooling_s": max(0, round(s.cooldown_until - now))} for s in slots]
+            t: [{"model": s.key, "cooling_s": max(0, round(s.cooldown_until - now)), "search_cooling_s": max(0, round(s.search_cooldown_until - now))} for s in slots]
             for t, slots in _slots.items()
         },
     }
@@ -485,7 +486,7 @@ async def complete(
     for round_ in range(2):
         for slot in ladder:
             now = time.time()
-            if slot.cooldown_until > now:
+            if slot.cooldown_until > now or (search and slot.search_cooldown_until > now):
                 continue
             doc = _fit_document(document, slot.max_input_tokens, system + prompt) if document else ""
             if document and len(doc) < min(len(document), 1500):
@@ -504,7 +505,12 @@ async def complete(
                         slot, system, full_prompt, json_mode=json_mode, max_tokens=max_tokens, temperature=temperature
                     )
             except _RateLimited as rl:
-                slot.cooldown_until = time.time() + (3600 if rl.daily else min(max(rl.retry_after, 5), 120))
+                pause = 3600 if rl.daily else min(max(rl.retry_after, 5), 120)
+                if search:
+                    # A 429 on a grounded call is about the search quota, not the model: don't starve plain calls.
+                    slot.search_cooldown_until = time.time() + max(pause, 900)
+                else:
+                    slot.cooldown_until = time.time() + pause
                 errors.append(f"{slot.key}: {rl}")
                 usage["errors"].append({"t": time.time(), "where": slot.key, "task": task, "error": str(rl)})
                 continue
@@ -521,12 +527,13 @@ async def complete(
                         validate(data)
                 except Exception as exc:  # noqa: BLE001 - bad output -> next model
                     errors.append(f"{slot.key}: invalid output: {exc}")
-                    usage["errors"].append({"t": time.time(), "where": slot.key, "task": task, "error": f"invalid output: {str(exc)[:200]}"})
+                    usage["errors"].append({"t": time.time(), "where": slot.key, "task": task, "error": f"invalid output: {str(exc)[:200]}",
+                                            "sample": text[:400]})
                     continue
             cache.put(key, {"text": text, "data": data, "model": slot.key, "in": tin, "out": tout, "sources": sources})
             return LLMResult(text, data, slot.key, False, tin, tout, sources)
         # Everything is cooling down: wait for the soonest model once, then try again.
-        soonest = min((s.cooldown_until for s in ladder), default=0) - time.time()
+        soonest = min((max(s.cooldown_until, s.search_cooldown_until if search else 0) for s in ladder), default=0) - time.time()
         if round_ == 0 and 0 < soonest <= 65:
             await asyncio.sleep(soonest + 0.5)
             continue

@@ -363,7 +363,13 @@ async def diag():
         r = await http.request("GET", "https://www.screener.in/company/source/quarter/1489/9/2026/", retries=0, timeout=30)
         return f"{r.url}"[:120] + f" {len(r.content)} bytes"
 
+    async def web():
+        from .sources import websearch
+        r = await websearch.search('"Sandeep Jain" Bajaj Finance linkedin', 5)
+        return [x["url"] for x in r[:3]]
+
     results = await asyncio.gather(
+        probe("websearch", web()),
         probe("yahoo", yahoo()), probe("bse", bse_ann()), probe("screener", scr()), probe("nse", nse_ann()), probe("llm", models()),
         probe("bse_pdf", bse_pdf()), probe("bse_api_alt", bse_api_alt()), probe("nse_pdf", nse_pdf()), probe("nse_annual_reports", nse_ar()),
         probe("screener_quarter_pdf", screener_quarter_pdf()),

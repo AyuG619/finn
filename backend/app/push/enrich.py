@@ -170,11 +170,16 @@ def check_identities(col: dict) -> list[str]:
     problems = []
     rev, oi, ti = _num(col.get("revenue_from_operations")), _num(col.get("other_income")), _num(col.get("total_income"))
     te, pbt, exc = _num(col.get("total_expenses")), _num(col.get("profit_before_tax")), _num(col.get("exceptional_items")) or 0.0
+    assoc = _num(col.get("share_of_associates")) or 0.0
     pat = _num(col.get("net_profit"))
     if rev is not None and oi is not None and ti and ti > 0 and abs(rev + oi - ti) / ti > 0.015:
         problems.append("revenue + other income != total income")
-    if ti and te is not None and pbt is not None and ti > 0 and abs(ti - te + exc - pbt) / ti > 0.02:
-        problems.append("total income - expenses != PBT")
+    if ti and te is not None and pbt is not None and ti > 0:
+        # Exceptional items and associates' share sit between total expenses and PBT; their signs vary
+        # by presentation, so accept any of the four combinations.
+        gaps = [abs(ti - te + a * exc + b * assoc - pbt) for a in (1, -1) for b in (1, -1)]
+        if min(gaps) / ti > 0.02:
+            problems.append("total income - expenses != PBT")
     if pbt is not None and pat is not None and pbt > 0 and pat > pbt * 1.25 + abs(exc):
         problems.append("PAT far above PBT")
     if rev is not None and pbt is not None and rev > 0 and pbt > rev:
@@ -296,7 +301,29 @@ def linkedin_search(name: str, company: str) -> str:
     return f"https://www.linkedin.com/search/results/all/?keywords={quote_plus(f'{name} {company}')}"
 
 
+def _bio_result(d: dict, sources: list) -> dict:
+    if not d.get("found"):
+        return {"found": False, "sources": sources[:3]}
+    li = str(d.get("linkedin_url") or "")
+    return {
+        "found": True,
+        "headline": d.get("headline"),
+        "background": d.get("background"),
+        "previous_roles": [r for r in (d.get("previous_roles") or []) if isinstance(r, dict)][:4],
+        "linkedin_url": li if li.startswith("https://") and "linkedin.com/" in li else None,
+        "confidence": d.get("confidence"),
+        "sources": sources[:4],
+    }
+
+
 async def person_background(name: str, role: str, company: str, profile: str | None) -> dict | None:
+    """Professional background of an incoming executive.
+
+    1. Gemini with Google Search grounding (when the key's quota allows it).
+    2. Otherwise: a keyless web search (LinkedIn-first) whose results are summarised by the fast model,
+       which may only use results that clearly match the person.
+    The company's own disclosed profile (SEBI requires one for appointments) is always shown alongside.
+    """
     if not available():
         return None
     try:
@@ -309,21 +336,42 @@ async def person_background(name: str, role: str, company: str, profile: str | N
             max_tokens=1200,
             temperature=0.2,
         )
+        d = res.data if isinstance(res.data, dict) else {}
+        if d:
+            return _bio_result(d, res.sources)
     except LLMUnavailable as exc:
-        log.info("bio search unavailable: %s", exc)
+        log.info("grounded search unavailable (%s); falling back to web results", str(exc)[:120])
+    from ..sources import websearch
+
+    try:
+        results = await websearch.search(f'"{name}" {company} linkedin', 6)
+        if len(results) < 3:
+            results += [r for r in await websearch.search(f"{name} {role} {company}", 6) if r not in results]
+    except Exception as exc:  # noqa: BLE001
+        log.info("web search failed: %s", exc)
+        return None
+    if not results:
+        return {"found": False, "sources": []}
+    listing = "\n".join(f"[{i}] {r['title']} | {r['url']} | {r['snippet']}" for i, r in enumerate(results[:8]))
+    try:
+        res = await complete(
+            "person_bio_from_results",
+            system=prompts.BIO_FROM_RESULTS_SYSTEM,
+            prompt=prompts.BIO_FROM_RESULTS_PROMPT.format(name=name, role=role, company=company, profile=profile or "(none)", results=listing),
+            tier="fast",
+            max_tokens=900,
+            temperature=0.1,
+        )
+    except LLMUnavailable:
         return None
     d = res.data if isinstance(res.data, dict) else {}
-    if not d.get("found"):
-        return {"found": False, "sources": res.sources[:3]}
-    return {
-        "found": True,
-        "headline": d.get("headline"),
-        "background": d.get("background"),
-        "previous_roles": (d.get("previous_roles") or [])[:4],
-        "linkedin_url": d.get("linkedin_url") if str(d.get("linkedin_url") or "").startswith("https://") else None,
-        "confidence": d.get("confidence"),
-        "sources": res.sources[:4],
-    }
+    used = [results[i] for i in (d.get("used_results") or []) if isinstance(i, int) and 0 <= i < len(results)]
+    return _bio_result(d, [{"title": _domain(r["url"]), "url": r["url"]} for r in used])
+
+
+def _domain(url: str) -> str:
+    m = re.match(r"https?://(?:www\.)?([^/]+)", url)
+    return m.group(1) if m else "source"
 
 
 async def management_card(filing: dict, ctx: dict) -> dict:

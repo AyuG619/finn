@@ -202,3 +202,19 @@ def test_pick_results_pages_prefers_dense_consolidated_statement():
              "Segment information revenue from operations"]
     assert pick_results_pages(pages) == [1, 2, 3]
     assert pick_results_pages(pages, 2) == [2, 3]  # consolidated statement + its continuation only
+
+
+def test_websearch_parses_duckduckgo_html():
+    from app.sources.websearch import parse_results
+
+    page = (
+        '<div class="result results_links"><h2 class="result__title"><a rel="nofollow" class="result__a" '
+        'href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fin.linkedin.com%2Fin%2Fravi-kumar&amp;rut=abc">Ravi Kumar - CFO - Bajaj Finance | LinkedIn</a></h2>'
+        '<a class="result__snippet" href="x">Experience: <b>Bajaj Finance</b> &amp; HDFC Bank. Education: ICAI</a></div>'
+        '<div class="result"><h2><a rel="nofollow" class="result__a" href="https://example.com/news">Some news</a></h2>'
+        '<a class="result__snippet" href="y">Other text</a></div>'
+    )
+    r = parse_results(page)
+    assert r[0] == {"title": "Ravi Kumar - CFO - Bajaj Finance | LinkedIn", "url": "https://in.linkedin.com/in/ravi-kumar",
+                    "snippet": "Experience: Bajaj Finance & HDFC Bank. Education: ICAI"}
+    assert r[1]["url"] == "https://example.com/news"
