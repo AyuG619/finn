@@ -129,6 +129,7 @@ function Dossier({ symbol }: { symbol: string }) {
   const r = state?.result || {};
   const co = r.company;
   const running = state?.status === "running";
+  const notFound = state?.status === "error" && !co;
 
   return (
     <div className="view">
@@ -148,6 +149,8 @@ function Dossier({ symbol }: { symbol: string }) {
 
       {error && !state && <div className="notice err">{error}</div>}
       {state?.status === "error" && <div className="notice err">{state.error}</div>}
+      {notFound && <DidYouMean query={symbol} />}
+      {notFound ? null : <>
 
       {state && (running || state.status === "error") && <Stages state={state} />}
       {state && state.status === "done" && <EngineLine state={state} />}
@@ -185,6 +188,29 @@ function Dossier({ symbol }: { symbol: string }) {
       {r.calls?.length > 0 && <Calls calls={r.calls} />}
       {r.sources && <Sources sources={r.sources} url={co?.screener_url} />}
       {co && <AskBox symbol={co.symbol} ready={state?.status === "done"} />}
+      </>}
+    </div>
+  );
+}
+
+function DidYouMean({ query }: { query: string }) {
+  const [hits, setHits] = useState<{ symbol: string; name: string }[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.search(query).then((r) => live && setHits(r.results.slice(0, 4))).catch(() => live && setHits([]));
+    return () => {
+      live = false;
+    };
+  }, [query]);
+  if (!hits || !hits.length) return <p className="small muted">Try the company's NSE symbol (e.g. TRENT) or type its name in the bar below.</p>;
+  return (
+    <div className="card">
+      <h3>Did you mean</h3>
+      <div className="chips" style={{ flexWrap: "wrap" }}>
+        {hits.map((h) => (
+          <button key={h.symbol} className="chip" onClick={() => go("research", h.symbol)}>{h.symbol} · {h.name}</button>
+        ))}
+      </div>
     </div>
   );
 }
