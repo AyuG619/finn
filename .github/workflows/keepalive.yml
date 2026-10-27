@@ -1,0 +1,17 @@
+# Render's free tier sleeps after 15 idle minutes. Ping FINN so reviewers never wait for a cold start,
+# and so the server's 15-minute filing refresh (and push alerts) keep running.
+name: keep-alive
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping FINN
+        run: |
+          curl -fsS --retry 3 --retry-delay 20 --max-time 60 "${FINN_URL:-https://finn-rvpm.onrender.com}/api/health" || true
+        env:
+          FINN_URL: ${{ vars.FINN_URL }}

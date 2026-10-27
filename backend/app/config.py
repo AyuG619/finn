@@ -28,6 +28,8 @@ GROQ_MODELS_SMART = _env("GROQ_MODELS_SMART")
 REFRESH_MINUTES = int(_env("FINN_REFRESH_MINUTES", "15") or "15")
 # Pre-compute research for the demo set on startup so the first visit is instant.
 WARM_RESEARCH = _env("FINN_WARM_RESEARCH", "1") == "1"
+# Wait this long after boot before warming research, so back-to-back deploys don't spend LLM quota.
+WARM_DELAY_MIN = float(_env("FINN_WARM_DELAY_MIN", "10") or "10")
 
 # Web push (VAPID). Generated and persisted under DATA_DIR when not provided.
 VAPID_PRIVATE_KEY = _env("VAPID_PRIVATE_KEY")

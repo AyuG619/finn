@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import cache, http
-from .config import REFRESH_MINUTES, STATIC_DIR, WARM_RESEARCH
+from .config import REFRESH_MINUTES, STATIC_DIR, WARM_DELAY_MIN, WARM_RESEARCH
 from .llm import router as llm
 from .portfolio import PORTFOLIO, RESEARCH_SET
 from .push import digest as digest_mod
@@ -90,7 +90,7 @@ async def background_loop() -> None:
         except Exception as exc:  # noqa: BLE001
             log.exception("refresh failed")
             state["last_refresh_error"] = f"{type(exc).__name__}: {exc}"
-        if WARM_RESEARCH and not warmed:
+        if WARM_RESEARCH and not warmed and time.time() - STARTED >= WARM_DELAY_MIN * 60:
             warmed = True
             for r in RESEARCH_SET:
                 engine.get_or_start(r["symbol"])
@@ -102,7 +102,11 @@ async def background_loop() -> None:
                         pass
         if REFRESH_MINUTES <= 0:
             return
-        await asyncio.sleep(REFRESH_MINUTES * 60)
+        # Sleep until the next refresh, waking early once for the delayed research warm-up.
+        wait = REFRESH_MINUTES * 60
+        if WARM_RESEARCH and not warmed:
+            wait = min(wait, max(5, WARM_DELAY_MIN * 60 - (time.time() - STARTED)))
+        await asyncio.sleep(wait)
 
 
 @asynccontextmanager
