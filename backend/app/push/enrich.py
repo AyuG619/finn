@@ -263,9 +263,10 @@ async def results_card(filing: dict, ctx: dict) -> dict:
                     # Our read of the filing disagrees with the exchange-sourced standardised numbers:
                     # show those instead, and say so.
                     metrics, margins = build_metrics(sh["current"], sh["prev"], sh["yoy"], bank)
-                    for m in metrics:
-                        if m["key"] == "ebitda":
-                            m["label"] = "Financing profit" if bank else "Operating profit"
+                    if bank:
+                        for m in metrics:
+                            if m["key"] == "ebitda":
+                                m["label"] = "Financing profit"
                     card.update({"metrics": metrics, "margins": margins, "source": "screener.in standardised table",
                                  "filing_read_rejected": f"FINN's read of the filing differed from screener by {diff:.1f}% on revenue"})
                     card["verified"] = {"against": "results filing", "revenue_diff_pct": round(diff, 2), "ok": False}
@@ -278,14 +279,10 @@ async def results_card(filing: dict, ctx: dict) -> dict:
             metrics, margins = build_metrics(sh["current"], sh["prev"], sh["yoy"], bank)
             card.update({"metrics": metrics, "margins": margins, "basis": page.get("basis"), "is_bank": bank,
                          "source": "screener.in standardised table"})
-            if bank:
+            if bank:  # screener's "operating profit" for non-banks is sales minus expenses, i.e. EBITDA
                 for m in metrics:
                     if m["key"] == "ebitda":
                         m["label"] = "Financing profit"
-            else:
-                for m in metrics:
-                    if m["key"] == "ebitda":
-                        m["label"] = "Operating profit"
             return card
     card["source"] = None
     card.setdefault("note", "Numbers not available yet.")

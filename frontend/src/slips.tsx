@@ -41,7 +41,7 @@ export function ResultsFigures({ e }: { e: Enrichment }) {
       </table>
       {m.ebitda_margin !== undefined && (
         <p className="slip-why" style={{ color: "var(--ink-2)" }}>
-          {e.is_bank ? "Pre-provision margin" : e.source?.startsWith("screener") ? "Operating margin" : "EBITDA margin"} {m.ebitda_margin.toFixed(1)}%
+          {e.is_bank ? (e.source?.startsWith("screener") ? "Financing margin" : "Pre-provision margin") : "EBITDA margin"} {m.ebitda_margin.toFixed(1)}%
           {m.ebitda_margin_yoy_bps !== undefined && <> · {signed(m.ebitda_margin_yoy_bps, 0, " bps")} YoY</>}
           {m.ebitda_margin_qoq_bps !== undefined && <> · {signed(m.ebitda_margin_qoq_bps, 0, " bps")} QoQ</>}
         </p>
@@ -55,6 +55,8 @@ export function ResultsFigures({ e }: { e: Enrichment }) {
           ) : (
             <><span className="warn">Check this.</span> Revenue differs from screener.in by {e.verified.revenue_diff_pct.toFixed(1)}%. </>
           )
+        ) : e.source?.startsWith("screener") ? (
+          <>From screener.in's standardised table of the filed results. </>
         ) : (
           <>Source: {e.source || "filing"}. </>
         )}
