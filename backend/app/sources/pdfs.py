@@ -138,13 +138,53 @@ RESULTS_KEYWORDS = {
 }
 
 
-def pick_results_pages(pages: list[str], limit: int = 4) -> list[int]:
-    """The pages of a results filing that carry the P&L statement (consolidated first)."""
-    scored = [(i, s) for i, s in score_pages(pages, RESULTS_KEYWORDS) if s > 0]
-    if not scored:
-        return list(range(min(limit, len(pages))))
-    best = [i for i, _ in scored[:limit]]
-    return sorted(best)
+PNL_LINE_ITEMS = [
+    "revenue from operations", "other income", "total income", "finance cost", "depreciation", "profit before tax",
+    "tax expense", "total expenses", "employee benefit", "profit for the period", "interest earned", "interest expended",
+    "operating profit before provisions", "provisions (other than tax)", "net profit",
+]
+
+
+def pick_results_pages(pages: list[str], limit: int = 3) -> list[int]:
+    """The page(s) carrying the quarterly P&L statement, consolidated first.
+
+    Results filings bundle standalone and consolidated statements, segment tables, press releases and
+    sometimes IFRS/USD statements. Mixing lines from different statements is the classic extraction
+    error, so pick the pages with the densest set of P&L line items rather than scattered keyword hits.
+    """
+    cands = []
+    for i, text in enumerate(pages[:45]):
+        low = text.lower()
+        coverage = sum(1 for k in PNL_LINE_ITEMS if k in low)
+        if coverage < 5:
+            continue
+        bonus = 0.0
+        if "consolidated" in low[:1500]:
+            bonus += 3
+        elif "standalone" in low[:1500]:
+            bonus -= 1.5
+        if re.search(r"quarter ended|three months ended", low):
+            bonus += 2
+        if re.search(r"statement of (un)?audited", low):
+            bonus += 1
+        if re.search(r"us\$|usd|ifrs", low[:2000]):
+            bonus -= 3
+        cands.append((coverage + bonus, i))
+    if not cands:
+        scored = [(i, s) for i, s in score_pages(pages, RESULTS_KEYWORDS) if s > 0]
+        return sorted(i for i, _ in scored[:4]) or list(range(min(4, len(pages))))
+    cands.sort(reverse=True)
+    best = cands[0][1]
+    chosen = [best]
+    # The statement often runs onto the next page (tax, PAT, EPS, other comprehensive income).
+    if best + 1 < len(pages) and best + 1 not in chosen:
+        chosen.append(best + 1)
+    for _, i in cands[1:]:
+        if len(chosen) >= limit:
+            break
+        if i not in chosen:
+            chosen.append(i)
+    return sorted(chosen[:limit])
 
 
 def numbered_text(pages: list[str], indices: list[int], max_chars: int) -> str:

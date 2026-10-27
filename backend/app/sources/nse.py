@@ -156,3 +156,24 @@ async def annual_reports(symbol: str) -> list[dict]:
         return out
 
     return await cache.cached(f"nse:ar:{symbol}", 24 * 3600, fetch)
+
+
+async def event_calendar(days_ahead: int = 30) -> list[dict]:
+    """Upcoming board meetings across the market (one request), e.g. results dates."""
+    start = now_ist()
+    end = start + timedelta(days=days_ahead)
+
+    async def fetch():
+        rows = await session.get_json(
+            "/api/event-calendar", {"index": "equities", "from_date": start.strftime("%d-%m-%Y"), "to_date": end.strftime("%d-%m-%Y")}
+        )
+        out = []
+        for r in rows or []:
+            try:
+                d = datetime.strptime(r.get("date", ""), "%d-%b-%Y").date().isoformat()
+            except ValueError:
+                continue
+            out.append({"symbol": r.get("symbol"), "date": d, "purpose": r.get("purpose") or "", "desc": (r.get("bm_desc") or "")[:200]})
+        return out
+
+    return await cache.cached(f"nse:calendar:{start.strftime('%Y%m%d')}:{days_ahead}", 3 * 3600, fetch)

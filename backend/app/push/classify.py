@@ -161,6 +161,9 @@ KEYWORD_RULES: list[tuple[re.Pattern, str, str | None, int]] = [
     (_R(r"newspaper|news paper|publication of (the )?(un)?audited|e-?paper"), "unclassified", "newspaper", 4),
     (_R(r"trading window"), "unclassified", None, 3),
     (_R(r"\b74 ?\(5\)|compliance certificate|loss of share certificate|duplicate share|investor (grievance|complaint)|asset cover|monitoring agency|statement of deviation|regulation 57|esop|esos|esps|employee stock option"), "unclassified", None, 5),
+    # A clarification of a news report mentions whatever the news was about (a buyback, a deal): it is
+    # still a clarification, so this must run before the topical rules.
+    (_R(r"clarification|spurt in (price|volume)|price movement|movement in (price|volume)|news (item|report|article)|media report"), "press_release", "clarification", 55),
     (_R(r"pledg|encumbrance"), "pledging", None, 55),
     (_R(r"sast|substantial acquisition|regulation 7 ?\(2\)|reg\.? ?7\(2\)|insider trading|prohibition of insider"), "insider_trading", None, 40),
     (_R(r"transcript"), "earnings_call", "transcript", 42),
@@ -181,7 +184,6 @@ KEYWORD_RULES: list[tuple[re.Pattern, str, str | None, int]] = [
     (_R(r"dividend"), "dividend", None, 34),
     (_R(r"record date"), "dividend", "record_date", 22),
     (_R(r"order|contract|letter of award|\bloa\b|bagging|bags|secures?|wins?\b"), "press_release", "order", 48),
-    (_R(r"clarification|spurt in (price|volume)|price movement|movement in (price|volume)"), "press_release", "clarification", 55),
     (_R(r"press release|media release|launch|partnership|collaborat|tie-?up|alliance|approval from|usfda|patent"), "press_release", None, 42),
 ]
 
@@ -215,18 +217,24 @@ def _text(f: dict) -> str:
     return f"{f.get('subject', '')} || {f.get('detail', '')}"
 
 
+_NON_EXEC_RE = _R(r"non[\s\-]*executive\s+(independent\s+)?director|nominee director|non[\s\-]*independent director")
+
+
 def management_role(text: str) -> tuple[str, str]:
     """(role_bucket, direction) for a management-change filing."""
     t = text.lower()
+    non_exec = bool(_NON_EXEC_RE.search(t))
+    # "Non-Executive Director" contains "Executive Director": blank it out before looking for top roles.
+    t_roles = _NON_EXEC_RE.sub(" board member ", t)
     if re.search(r"statutory auditor|\bauditors?\b", t) and _EXIT_RE.search(t):
         role = "auditor"
-    elif _CS_RE.search(t) and not _TOP_ROLE_RE.search(t):
+    elif _CS_RE.search(t) and not _TOP_ROLE_RE.search(t_roles):
         role = "company_secretary"
-    elif _TOP_ROLE_RE.search(t):
+    elif _TOP_ROLE_RE.search(t_roles):
         role = "top"
     elif _INDEP_RE.search(t):
         role = "independent_director"
-    elif _DIRECTOR_RE.search(t):
+    elif non_exec or _DIRECTOR_RE.search(t):
         role = "director"
     else:
         role = "other"
@@ -294,6 +302,13 @@ def classify(f: dict) -> Classification:
         if role == "other" or re.search(r"director/kmp/smp|about (resignation|appointment|cessation|change in management)\s*$", low):
             return Classification("management_change", "other", 60, "management change (role in filing)", needs_model=True)
         return Classification("management_change", role, MGMT_SCORES[role], f"management change ({role.replace('_', ' ')})")
+    if not sub and cat.startswith("analysts/institutional investor meet"):
+        dlow = (f.get("detail") or "").lower()  # the description itself says "Con. Call": judge the text
+        if re.search(r"transcript", dlow):
+            return Classification("earnings_call", "transcript", 42, "earnings call transcript")
+        if re.search(r"audio|recording|earnings call|conference call|con-?\.? ?call|investors? call", dlow):
+            return Classification("earnings_call", "notice", 18, "earnings call scheduled")
+        return Classification("investor_meetings", None, 14, "analyst / investor meeting")
     if not sub and cat in NSE_DESC_MAP:
         category, subtype, base = NSE_DESC_MAP[cat]
         if category == "press_release" and subtype is None and (_RESULTS_RE.search(low) or _QUARTER_REVIEW_RE.search(low)):

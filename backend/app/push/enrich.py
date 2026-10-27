@@ -160,12 +160,39 @@ async def _filing_material(filing: dict, max_pages: int, pick=None) -> tuple[str
 
 # --------------------------------------------------------------------------- results
 
+def _num(v):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def check_identities(col: dict) -> list[str]:
+    """Accounting identities a correctly-read P&L column satisfies. A read that mixes lines from
+    different statements (standalone vs consolidated, quarter vs half-year) almost always breaks one."""
+    problems = []
+    rev, oi, ti = _num(col.get("revenue_from_operations")), _num(col.get("other_income")), _num(col.get("total_income"))
+    te, pbt, exc = _num(col.get("total_expenses")), _num(col.get("profit_before_tax")), _num(col.get("exceptional_items")) or 0.0
+    pat = _num(col.get("net_profit"))
+    if rev is not None and oi is not None and ti and ti > 0 and abs(rev + oi - ti) / ti > 0.015:
+        problems.append("revenue + other income != total income")
+    if ti and te is not None and pbt is not None and ti > 0 and abs(ti - te + exc - pbt) / ti > 0.02:
+        problems.append("total income - expenses != PBT")
+    if pbt is not None and pat is not None and pbt > 0 and pat > pbt * 1.25 + abs(exc):
+        problems.append("PAT far above PBT")
+    if rev is not None and pbt is not None and rev > 0 and pbt > rev:
+        problems.append("PBT above revenue")
+    return problems
+
+
 def _validate_results(d):
-    cur = ((d or {}).get("columns") or {}).get("current") or {}
+    cols = (d or {}).get("columns") or {}
+    cur = cols.get("current") or {}
     if not any(isinstance(cur.get(k), (int, float)) for k in ("revenue_from_operations", "interest_earned", "total_income")):
         raise ValueError("no revenue in current column")
     if not any(isinstance(cur.get(k), (int, float)) for k in ("profit_before_tax", "net_profit")):
         raise ValueError("no profit in current column")
+    for name in ("current", "previous_quarter", "year_ago_quarter"):
+        probs = check_identities(cols.get(name) or {})
+        if probs:
+            raise ValueError(f"{name} column fails accounting identities: {', '.join(probs)}")
 
 
 async def results_card(filing: dict, ctx: dict) -> dict:
@@ -181,7 +208,7 @@ async def results_card(filing: dict, ctx: dict) -> dict:
     if available() and filing.get("pdf_url"):
         try:
             text, pdf_bytes, used = await _filing_material(
-                filing, 10, pick=lambda pages: pdfs.pick_results_pages(pages, 4)
+                filing, 10, pick=lambda pages: pdfs.pick_results_pages(pages, 2)
             )
             res = await complete(
                 "results_extract",
@@ -217,12 +244,26 @@ async def results_card(filing: dict, ctx: dict) -> dict:
             {"metrics": metrics, "margins": margins, "basis": extracted.get("basis"), "is_bank": bank,
              "source": "results filing", "unit_reported": extracted.get("unit")}
         )
-        # Cross-check revenue against screener's standardised table when it has the same quarter.
+        # Cross-check against screener's standardised table when it already has the quarter.
         if page:
             sh = screener_headline(page, card["period_end"])
             if sh and sh["current"].get("revenue") and cur.get("revenue"):
                 diff = abs(sh["current"]["revenue"] - cur["revenue"]) / sh["current"]["revenue"] * 100
-                card["verified"] = {"against": "screener.in", "revenue_diff_pct": round(diff, 2), "ok": diff <= 2.5}
+                pdiff = None
+                if sh["current"].get("pbt") and cur.get("pbt"):
+                    pdiff = abs(sh["current"]["pbt"] - cur["pbt"]) / abs(sh["current"]["pbt"]) * 100
+                ok = diff <= 2.5 and (pdiff is None or pdiff <= 3)
+                card["verified"] = {"against": "screener.in", "revenue_diff_pct": round(diff, 2), "ok": ok}
+                if not ok:
+                    # Our read of the filing disagrees with the exchange-sourced standardised numbers:
+                    # show those instead, and say so.
+                    metrics, margins = build_metrics(sh["current"], sh["prev"], sh["yoy"], bank)
+                    for m in metrics:
+                        if m["key"] == "ebitda":
+                            m["label"] = "Financing profit" if bank else "Operating profit"
+                    card.update({"metrics": metrics, "margins": margins, "source": "screener.in standardised table",
+                                 "filing_read_rejected": f"FINN's read of the filing differed from screener by {diff:.1f}% on revenue"})
+                    card["verified"] = {"against": "results filing", "revenue_diff_pct": round(diff, 2), "ok": False}
         return card
     # Fallback: screener's table, if it already carries the quarter this filing reports.
     if page:
@@ -384,7 +425,7 @@ async def summary_card(filing: dict, ctx: dict) -> dict:
 # --------------------------------------------------------------------------- dispatcher
 
 def enrichment_key(filing_id: str) -> str:
-    return f"enrich:v1:{filing_id}"
+    return f"enrich:v2:{filing_id}"
 
 
 _inflight: dict[str, asyncio.Task] = {}
@@ -398,6 +439,13 @@ async def _compute(filing: dict, ctx: dict) -> dict:
         card = await management_card(filing, ctx)
     else:
         card = await summary_card(filing, ctx)
+        if card.get("category") == "results" and sub in ("board_outcome", None) and filing.get("pdf_url"):
+            # A bare "outcome of board meeting" that turns out to carry the results: read the numbers.
+            res = await results_card({**filing, "category": "results", "subtype": "outcome"}, ctx)
+            if res.get("metrics"):
+                res["one_liner"] = card.get("one_liner")
+                res["promoted_from"] = "board outcome"
+                card = res
     card["filing_id"] = filing["id"]
     return card
 
@@ -435,6 +483,12 @@ def apply_refinement(item: dict, card: dict | None) -> None:
         item["category_label"] = CATEGORIES["press_release"]
         item["score"] = min(item["score"], 30)
         item["why"] = item.get("why", []) + ["filing shows no change in position"]
+        return
+    if card.get("kind") == "results" and card.get("promoted_from") and item.get("category") != "results":
+        item["category"] = "results"
+        item["category_label"] = CATEGORIES["results"]
+        item["subtype"] = "outcome"
+        item["score"] = max(item["score"], 80)
         return
     if card.get("kind") != "summary":
         return

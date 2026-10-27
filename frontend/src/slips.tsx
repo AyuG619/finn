@@ -47,7 +47,9 @@ export function ResultsFigures({ e }: { e: Enrichment }) {
         </p>
       )}
       <p className="verify">
-        {e.verified ? (
+        {e.filing_read_rejected ? (
+          <><span className="warn">Standardised numbers shown.</span> {e.filing_read_rejected}, so FINN shows screener.in's exchange-sourced table instead. </>
+        ) : e.verified ? (
           e.verified.ok ? (
             <><span className="ok">✓ Cross-checked.</span> Revenue matches screener.in within {e.verified.revenue_diff_pct.toFixed(1)}%. </>
           ) : (

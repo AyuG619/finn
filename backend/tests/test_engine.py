@@ -176,3 +176,29 @@ def test_yahoo_gap_detected_and_change_labelled():
     assert last["since"] == d["bars"][-2]["date"]
     hits = evaluate(last, Thresholds(price_pct=4))
     assert hits[0]["kind"] == "price" and "since" in hits[0]["label"] and "in a day" not in hits[0]["label"]
+
+
+def test_results_identities_catch_mixed_statements():
+    from app.push.enrich import check_identities
+
+    good = {"revenue_from_operations": 49244, "other_income": 848, "total_income": 50092, "total_expenses": 39029,
+            "profit_before_tax": 11063, "net_profit": 7838}
+    assert check_identities(good) == []
+    mixed = dict(good, revenue_from_operations=45472)  # revenue lifted from another statement
+    assert "revenue + other income != total income" in check_identities(mixed)
+    bad_pbt = dict(good, profit_before_tax=9000)
+    assert "total income - expenses != PBT" in check_identities(bad_pbt)
+
+
+def test_pick_results_pages_prefers_dense_consolidated_statement():
+    from app.sources.pdfs import pick_results_pages
+
+    items = "Revenue from operations Other income Total income Employee benefit expenses Finance cost Depreciation Total expenses Profit before tax Tax expense Profit for the period"
+    pages = ["Press release: revenue grew, profit before tax rose" * 3,
+             "Statement of unaudited standalone results for the quarter ended " + items,
+             "Statement of unaudited consolidated results for the quarter ended " + items,
+             "continued: earnings per share, other comprehensive income",
+             "IFRS statement in US$ million " + items,
+             "Segment information revenue from operations"]
+    assert pick_results_pages(pages) == [1, 2, 3]
+    assert pick_results_pages(pages, 2) == [2, 3]  # consolidated statement + its continuation only

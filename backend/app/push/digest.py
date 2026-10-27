@@ -311,6 +311,18 @@ async def build(prefs: Prefs) -> dict:
                 }
             )
 
+    moves = _collapse_52w(moves)
+    try:
+        cal = await nse.event_calendar(30)
+        syms = {h["symbol"]: h for h in holdings}
+        for ev in cal:
+            h = syms.get(ev["symbol"])
+            if h and ev["date"] >= now.date().isoformat():
+                upcoming.append({"symbol": h["symbol"], "name": h["name"], "date": ev["date"], "filing_id": None, "weight": h.get("weight", 0),
+                                 "purpose": ev["purpose"]})
+    except Exception as exc:  # noqa: BLE001
+        log.info("event calendar unavailable: %s", exc)
+
     everything = items + moves
     everything.sort(key=lambda x: (-{"high": 2, "notable": 1, "routine": 0}[x["tier"]], -x["rank"], x["time"]), reverse=False)
     top = [x for x in everything if x["tier"] == "high"]
@@ -351,6 +363,27 @@ async def build(prefs: Prefs) -> dict:
         "quiet": quiet,
         "source_errors": source_errors,
     }
+
+
+def _collapse_52w(moves: list[dict]) -> list[dict]:
+    """A stock sitting at its 52-week low all week is one fact, not five alerts: keep the latest."""
+    only_52w = lambda m: all(h["kind"] in ("high_52w", "low_52w") for h in m["hits"])  # noqa: E731
+    latest: dict[tuple, dict] = {}
+    counts: dict[tuple, int] = defaultdict(int)
+    rest = []
+    for m in moves:
+        if only_52w(m):
+            key = (m["symbol"], m["hits"][0]["kind"])
+            counts[key] += 1
+            if key not in latest or m["date"] > latest[key]["date"]:
+                latest[key] = m
+        else:
+            rest.append(m)
+    for key, m in latest.items():
+        if counts[key] > 1:
+            m["hits"] = [{**m["hits"][0], "label": f"{m['hits'][0]['label']} ({counts[key]} sessions in this window)"}]
+        rest.append(m)
+    return rest
 
 
 def _bundle_management(items: list[dict]) -> list[dict]:

@@ -90,6 +90,9 @@ NSE_CASES = [
     ("General Updates", "Apollo Micro Systems Limited has informed the Exchange about General Updates", "unclassified", "routine"),
     ("Updates", "Zen Technologies Limited has informed the Exchange regarding Intimation regarding Business Today s Most Powerful Women in Business (MPW) Award received by Ms. Shilpa Choudari, Whole-time Director", "press_release", "routine"),
     ("Press Release", 'ICICI Bank Limited has informed the Exchange regarding a press release dated October 26, 2026, titled "Performance review: quarter ended September 30, 2026"', "results", "routine"),
+    ("Analysts/Institutional Investor Meet/Con. Call Updates", "Transcript of the call with media and of earnings call with analysts and investors on the financial results for the quarter ended September 30, 2026", "earnings_call", "notable"),
+    ("Appointment", "NTPC Limited has informed the Exchange regarding Appointment of Mr Shri Diwakar Nath Misra as Non- Executive Director of the company w.e.f. October 23, 2026.", "management_change", "notable"),
+    ("Updates", "Clarification on the news item published on the website of AD HOC NEWS dated 20th October 2026 captioned NTPC weighs share buyback", "press_release", "notable"),
     ("Integrated Filing- Financial", "Integrated Filing (Financial) for the quarter and half-year ended 30th September, 2026.", "results", "high"),
 ]
 
