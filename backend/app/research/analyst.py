@@ -278,7 +278,7 @@ def merge_promises(computed: list[dict], model_promises: list[dict]) -> list[dic
 def credibility(promises: list[dict]) -> dict | None:
     weights = {"delivered": 1.0, "partly": 0.5, "missed": 0.0}
     resolved = [p for p in promises if p.get("outcome") in weights]
-    if len(resolved) < 2:
+    if len(resolved) < 3:  # a score out of 10 from one or two promises says more than it knows
         return None
     score = round(10 * sum(weights[p["outcome"]] for p in resolved) / len(resolved), 1)
     counts = {k: sum(1 for p in resolved if p["outcome"] == k) for k in weights}

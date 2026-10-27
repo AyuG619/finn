@@ -113,6 +113,7 @@ def test_merge_and_credibility():
     assert next(p for p in merged if p["id"] == "g1")["outcome"] == "delivered"  # code wins
     cred = analyst.credibility(merged)
     assert cred["resolved"] == 3 and cred["score"] == round(10 * 2 / 3, 1)
+    assert analyst.credibility(merged[:2]) is None  # too few to score
 
 
 def test_resolve_period():
