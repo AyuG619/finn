@@ -64,7 +64,15 @@ export default function Watch({ config }: { config: Config | null }) {
   }, []);
 
   useEffect(() => {
-    api.usage().then(setUsage).catch(() => setUsage(null));
+    let live = true;
+    const load = (left: number) =>
+      api.usage().then((u) => live && setUsage(u)).catch(() => {
+        if (live && left > 0) window.setTimeout(() => load(left - 1), 4000);
+      });
+    load(2);
+    return () => {
+      live = false;
+    };
   }, []);
 
   // Keep the server's copy of the alert rules in step with the phone's.

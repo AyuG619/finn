@@ -203,6 +203,13 @@ MANAGEMENT MATERIAL (from primary documents):
 PROMISES WITH COMPUTED OUTCOMES (verdict decided by the numbers; explain, don't overrule):
 {computed}
 
+Rules for "promises":
+- A promise is a forward-looking commitment made in a call about a LATER period (a target, a plan, an expected
+  trajectory). A description of results already achieved ("grew 22% this year", "GNPA at 1.15%") is not a promise.
+- "delivered"/"missed"/"partly" only when a later reported period or a later call settles it. If the promised period
+  has not been reported yet, the outcome is "pending" (say how it is tracking in the evidence).
+- Never use figures from a period before the promise's due period as evidence that it was delivered.
+
 Return JSON:
 {{"promises": [{{"id": str (use the given id when present, else "q#"), "made_in": str, "promise": str (<= 25 words), "due": str,
      "outcome": "delivered"|"missed"|"partly"|"pending"|"revised"|"unverifiable",

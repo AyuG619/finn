@@ -370,7 +370,7 @@ async def _call_gemini(slot: ModelSlot, system: str, prompt: str, *, json_mode: 
             delay, daily = 30.0, False
         raise _RateLimited(delay, daily)
     if r.status_code in (500, 502, 503, 504):
-        raise _RateLimited(8.0)
+        raise _RateLimited(45.0)  # overloaded: give it a minute
     if r.status_code != 200:
         raise _BadRequest(f"gemini {r.status_code}: {r.text[:300]}")
     data = r.json()
@@ -424,7 +424,7 @@ async def _call_groq(slot: ModelSlot, system: str, prompt: str, *, json_mode: bo
     if r.status_code == 413:
         raise _BadRequest("groq: request too large for this model's budget")
     if r.status_code in (500, 502, 503, 504):
-        raise _RateLimited(8.0)
+        raise _RateLimited(45.0)  # overloaded: give it a minute
     if r.status_code != 200:
         raise _BadRequest(f"groq {r.status_code}: {r.text[:300]}")
     data = r.json()
@@ -587,6 +587,15 @@ async def complete(
                     slot.cooldown_until = time.time() + pause
                 errors.append(f"{slot.key}: {rl}")
                 usage["errors"].append({"t": time.time(), "where": slot.key, "task": task, "error": str(rl)})
+                continue
+            except httpx.TimeoutException as exc:
+                # A model that can't answer inside the budget is probably overloaded: skip it for a while
+                # rather than make the next caller wait out the same timeout.
+                if call_timeout >= 30:  # not just the tail of a spent time budget
+                    slot.cooldown_until = time.time() + 600
+                msg = f"{type(exc).__name__} after {call_timeout:.0f}s" + (" (cooling 10 min)" if call_timeout >= 30 else "")
+                errors.append(f"{slot.key}: {msg}")
+                usage["errors"].append({"t": time.time(), "where": slot.key, "task": task, "error": msg})
                 continue
             except (_BadRequest, httpx.HTTPError) as exc:
                 msg = str(exc) or type(exc).__name__  # httpx timeouts have an empty message
