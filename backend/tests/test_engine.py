@@ -450,3 +450,35 @@ def test_bio_keeps_only_linkedin_profiles_and_legible_sources():
     assert b["sources"] == [{"title": "nsearchives.nseindia.com", "url": "https://nsearchives.nseindia.com/x.pdf"},
                             {"title": "Corporate Announcements", "url": "https://ntpc.co.in/investors"}]
     assert _bio_result({"found": True, "linkedin_url": "https://in.linkedin.com/in/ravi-kumar-123"}, [])["linkedin_url"] == "https://in.linkedin.com/in/ravi-kumar-123"
+
+
+async def test_research_error_is_reported_not_restarted(monkeypatch):
+    import asyncio
+
+    from app.research import engine
+    from app.sources import screener as scr
+
+    async def missing(sym):
+        raise scr.CompanyNotFound(sym)
+
+    monkeypatch.setattr(engine.screener, "company_page", missing)
+    engine._jobs.pop("NOTREAL", None)
+    first = engine.get_or_start("NOTREAL")
+    assert first["status"] == "running"
+    await asyncio.sleep(0.05)
+    again = engine.get_or_start("NOTREAL")
+    assert again["status"] == "error" and "No company found" in again["error"]
+    assert engine.get_or_start("NOTREAL", refresh=True)["status"] == "running"  # explicit retry still works
+    await asyncio.sleep(0.05)
+
+
+def test_model_verdict_on_earlier_period_evidence_becomes_pending():
+    capex = {"id": "g1", "made_in": "Q3 FY26 call", "promise": "Capex of INR 1,000 cr in the coming year", "due": "FY27",
+             "outcome": "delivered", "evidence": "FY26 capex 1,484 cr (Annual Report 2026) exceeds promised 1,000 cr"}
+    plant = {"id": "q3", "made_in": "Q4 FY26 call", "promise": "Commission the refrigerator plant", "due": "Q4 FY26",
+             "outcome": "delivered", "evidence": "Plant commissioned and reported in Q4 FY26 call"}
+    early = {"id": "q4", "made_in": "Q4 FY26 call", "promise": "Launch 3 new products in FY27", "due": "FY27",
+             "outcome": "delivered", "evidence": "Three launches announced in the Q1 FY27 call"}
+    out = {p["id"]: p for p in analyst.merge_promises([], [capex, plant, early])}
+    assert out["g1"]["outcome"] == "pending" and "before the promised period" in out["g1"]["evidence"]
+    assert out["q3"]["outcome"] == "delivered" and out["q4"]["outcome"] == "delivered"

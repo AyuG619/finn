@@ -226,6 +226,26 @@ def _same_promise(a: str, b: str) -> bool:
     return len(ta & tb) / min(len(ta), len(tb)) > 0.8
 
 
+_PERIOD_TOKEN = re.compile(r"\b(?:[QH][1-4]\s*(?:of\s*)?)?FY\s*'?(?:\d{4}|\d{2})\b", re.I)
+
+
+def _span(period: tuple[str, int, list[int]]) -> tuple[int, int]:
+    """(first, last) quarter index of a resolved fiscal period."""
+    _, fy, qs = period
+    return fy * 4 + min(qs) - 1, fy * 4 + max(qs) - 1
+
+
+def evidence_predates_due(p: dict) -> bool:
+    """True when a model's verdict rests only on periods that end before the promised period begins
+    (e.g. FY26 capex cited as delivering an FY27 capex promise)."""
+    due = resolve_period(str(p.get("due") or ""), p.get("made_in") or "")
+    if not due:
+        return False
+    cited = [resolve_period(m.group(0), "") for m in _PERIOD_TOKEN.finditer(str(p.get("evidence") or ""))]
+    cited = [c for c in cited if c]
+    return bool(cited) and all(_span(c)[1] < _span(due)[0] for c in cited)
+
+
 def merge_promises(computed: list[dict], model_promises: list[dict]) -> list[dict]:
     """Computed verdicts win; model promises that duplicate them are dropped."""
     by_id = {c["id"]: c for c in computed}
@@ -242,6 +262,9 @@ def merge_promises(computed: list[dict], model_promises: list[dict]) -> list[dic
             continue
         if p.get("outcome") not in ("delivered", "missed", "partly", "pending", "revised", "unverifiable"):
             p["outcome"] = "unverifiable"
+        if p["outcome"] in ("delivered", "missed", "partly") and evidence_predates_due(p):
+            p["outcome"] = "pending"
+            p["evidence"] = f"Not yet judgeable: the evidence cited is from before the promised period. ({p.get('evidence')})"
         p["computed"] = False
         out.append(p)
 

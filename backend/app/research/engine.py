@@ -21,6 +21,7 @@ from . import fundamentals as F
 log = logging.getLogger("finn.research")
 
 RESULT_TTL = 12 * 3600
+ERROR_TTL = 300  # a failed run is reported for 5 minutes before a plain reload retries it
 _JOB_SEM = asyncio.Semaphore(2)
 
 STAGES = [
@@ -73,6 +74,8 @@ def get_or_start(symbol: str, refresh: bool = False) -> dict:
     job = _jobs.get(sym)
     if job and job.status == "running":
         return job.view()
+    if job and job.status == "error" and not refresh and time.time() - (job.finished or 0) < ERROR_TTL:
+        return job.view()  # let the poller see the failure instead of restarting the job on every poll
     if not refresh:
         cached_view = cache.get(result_key(sym), RESULT_TTL)
         if cached_view:
@@ -94,6 +97,9 @@ def peek(symbol: str) -> dict | None:
 async def _run(job: Job) -> None:
     calls: list[dict] = []
     try:
+        await screener.company_page(job.symbol)  # an unknown ticker fails in a second, not after the queue
+        if _JOB_SEM.locked():
+            job.stage("numbers", "pending", "Queued behind another research run")
         async with _JOB_SEM:
             await _pipeline(job, calls)
         job.status = "done"
@@ -287,6 +293,9 @@ async def _pipeline(job: Job, calls: list[dict]) -> None:
             tier="smart",
             max_tokens=7000,
             temperature=0.2,
+            effort="medium",
+            timeout=100,
+            deadline=260,
         )
         a = res.data if isinstance(res.data, dict) else {}
     except LLMUnavailable as exc:

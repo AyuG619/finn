@@ -198,7 +198,7 @@ uvicorn app.main:app --reload --port 8765
 # frontend (dev server proxies /api to :8765)
 cd ../frontend && npm ci && npm run dev
 
-# tests (no network needed): 99 unit tests
+# tests (no network needed): 101 unit tests
 cd ../backend && python -m pytest -q
 # 20 end-to-end UI flows (Playwright) against the mock server below
 python tests/ui_flows.py

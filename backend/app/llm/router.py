@@ -351,9 +351,11 @@ async def _call_gemini(slot: ModelSlot, system: str, prompt: str, *, json_mode: 
     # Fast-tier 2.x flash models think by default; turn it off for bulk extraction to save tokens.
     if slot.tier == "fast" and re.search(r"gemini-2\.\d-flash(?!-lite)", slot.model):
         gen["thinkingConfig"] = {"thinkingBudget": 0}
-    elif effort == "low" and "lite" not in slot.model:
-        # Extraction needs care, not long deliberation: cap thinking so a read takes seconds, not minutes.
-        gen["thinkingConfig"] = {"thinkingBudget": 1024} if re.search(r"gemini-2\.", slot.model) else {"thinkingLevel": "low"}
+    elif effort in ("low", "medium") and "lite" not in slot.model:
+        # Cap thinking so a call takes seconds, not minutes: extraction needs care, not deliberation, and
+        # even the reasoning step does well on a medium budget. (Unsupported levels fall back below.)
+        budget, level = (1024, "low") if effort == "low" else (4096, "medium")
+        gen["thinkingConfig"] = {"thinkingBudget": budget} if re.search(r"gemini-2\.", slot.model) else {"thinkingLevel": level}
     url = f"{GEMINI_BASE}/models/{slot.model}:generateContent"
     headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
     r = await _http().post(url, json=body, headers=headers, timeout=timeout)
