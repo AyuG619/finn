@@ -41,15 +41,17 @@ def parse_yahoo_chart(payload: dict, now: datetime | None = None) -> dict:
     offset = int(meta.get("gmtoffset") or 19800)
     bars: list[dict] = []
     seen: set[str] = set()
+    gaps: list[str] = []
     for i, t in enumerate(ts):
+        d = datetime.fromtimestamp(t + offset, tz=timezone.utc).strftime("%Y-%m-%d")
         try:
             close = quote_["close"][i]
             vol = quote_["volume"][i]
         except (KeyError, IndexError, TypeError):
             continue
         if close is None:
+            gaps.append(d)  # Yahoo knows the market traded that day but has no print: a data hole
             continue
-        d = datetime.fromtimestamp(t + offset, tz=timezone.utc).strftime("%Y-%m-%d")
         if d in seen:  # Yahoo occasionally repeats the live bar; keep the latest.
             bars = [b for b in bars if b["date"] != d]
         seen.add(d)
@@ -68,6 +70,7 @@ def parse_yahoo_chart(payload: dict, now: datetime | None = None) -> dict:
     for b in bars:
         b["provisional"] = _is_provisional(b["date"], now)
     return {
+        "gaps": [g for g in gaps if g not in seen],
         "source": "Yahoo Finance",
         "currency": meta.get("currency", "INR"),
         "name": meta.get("longName") or meta.get("shortName"),
@@ -139,9 +142,35 @@ async def history(symbol: str, range_: str = "1y") -> dict:
 
     async def fetch() -> dict:
         try:
-            return await _yahoo(symbol, range_)
+            data = await _yahoo(symbol, range_)
         except Exception as exc:  # noqa: BLE001
             log.warning("Yahoo failed for %s (%s); falling back to screener", symbol, exc)
             return await _screener(symbol, days)
+        if data.get("gaps"):
+            data = await _fill_gaps(symbol, data, days)
+        return data
 
-    return await cache.cached(f"prices:{symbol}:{range_}", 600, fetch)
+    data = await cache.cached(f"prices:v2:{symbol}:{range_}", 600, fetch)
+    for b in data["bars"]:
+        b["provisional"] = _is_provisional(b["date"])
+    return data
+
+
+async def _fill_gaps(symbol: str, data: dict, days: int) -> dict:
+    """Patch sessions Yahoo has no print for with screener.in's NSE closes."""
+    try:
+        alt = await _screener(symbol, days)
+    except Exception as exc:  # noqa: BLE001
+        log.info("could not fill %d price gaps for %s: %s", len(data["gaps"]), symbol, exc)
+        return data
+    by_date = {b["date"]: b for b in alt["bars"]}
+    filled = []
+    for g in data["gaps"]:
+        if g in by_date:
+            data["bars"].append({**by_date[g], "filled": True})
+            filled.append(g)
+    if filled:
+        data["bars"].sort(key=lambda b: b["date"])
+        data["gaps"] = [g for g in data["gaps"] if g not in filled]
+        data["source"] = "Yahoo Finance (gaps filled from screener.in)"
+    return data

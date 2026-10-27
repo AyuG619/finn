@@ -241,7 +241,7 @@ export function MoveSlip({ item, seen, onSeen, onDriver, highlight }: { item: Mo
     <SlipShell id={item.id} seen={seen} onSeen={() => onSeen(true)} highlight={highlight}>
       <div className="slip-head">
         <span className="tag">Unusual move</span>
-        <span>{item.provisional ? "· intraday, provisional until the 15:30 close" : `· close of ${new Date(item.date + "T12:00:00+05:30").toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`}</span>
+        <span className="time">{item.provisional ? "Live until the 15:30 close" : `Close, ${new Date(item.date + "T12:00:00+05:30").toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`}</span>
       </div>
       <div className="move-top">
         <div>
@@ -258,7 +258,7 @@ export function MoveSlip({ item, seen, onSeen, onDriver, highlight }: { item: Mo
         {item.hits.map((h) => (
           <span key={h.kind} className={`pill ${h.kind === "price" ? (up ? "green" : "red") : h.kind === "volume" ? "blue" : h.kind === "low_52w" ? "red" : "green"}`}>{h.label}</span>
         ))}
-        {item.vol_ratio !== null && !item.hits.some((h) => h.kind === "volume") && <span className="pill">{item.vol_ratio.toFixed(1)}× usual volume{item.provisional ? " so far" : ""}</span>}
+        {item.vol_ratio !== null && !item.provisional && !item.hits.some((h) => h.kind === "volume") && <span className="pill">{item.vol_ratio.toFixed(1)}× usual volume</span>}
       </div>
       {item.driver ? (
         <button className="driver" onClick={() => onDriver(item.driver!.id)}>
@@ -279,6 +279,13 @@ export function MoveSlip({ item, seen, onSeen, onDriver, highlight }: { item: Mo
   );
 }
 
+function moveNote(item: MoveItem): string {
+  const extra = item.hits.filter((h) => h.kind !== "price").map((h) => h.label);
+  const price = item.hits.find((h) => h.kind === "price");
+  if (price && price.label.includes("since")) extra.unshift(price.label.replace(/^[+−-][\d.]+%\s*/, ""));
+  return extra.join(", ") || (item.provisional ? "today so far" : "in a day");
+}
+
 export function RegisterRow({ item, open, onToggle, highlight }: { item: FilingItem | MoveItem; open: boolean; onToggle: () => void; highlight?: boolean }) {
   if (item.type === "move") {
     return (
@@ -288,7 +295,7 @@ export function RegisterRow({ item, open, onToggle, highlight }: { item: FilingI
           <div className="reg-top">
             <span className="reg-sym">{item.symbol}</span>
             <span className={`small ${tone(item.change_pct)}`} style={{ fontWeight: 700 }}>{pct(item.change_pct)}</span>
-            <span className="reg-cat">{item.hits.map((h) => h.label).join(" · ")}</span>
+            <span className="reg-cat">{moveNote(item)}</span>
           </div>
           {open && (
             <div className="reg-open">

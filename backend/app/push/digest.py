@@ -277,7 +277,7 @@ async def build(prefs: Prefs) -> dict:
     for h, hx in zip(holdings, hist):
         if not hx:
             continue
-        stats = session_stats(hx["bars"], t.lookback)
+        stats = session_stats(hx["bars"], t.lookback, hx.get("gaps"))
         sessions = _sessions_in_window(stats, start, hours)
         for s in sessions:
             hits = evaluate(s, t)
@@ -305,6 +305,7 @@ async def build(prefs: Prefs) -> dict:
                     "tier": tier(score),
                     "rank": score,
                     "driver": driver,
+                    "since": s.get("since"),
                     "spark": [b["close"] for b in hx["bars"][-30:]],
                     "impact_bps": round((s["change_pct"] or 0) * h.get("weight", 0), 1),
                 }
@@ -406,7 +407,9 @@ def _sessions_in_window(stats: list[dict], start: datetime, hours: float) -> lis
         # Short windows always show the latest completed session (so a Monday-morning 24h view still
         # reports Friday's close), plus today's provisional bar if the market is open.
         complete = [s for s in stats if not s["provisional"]]
-        out = complete[-1:] if complete else []
+        # ...but never a session older than three days (a stale bar from a data hole is not news).
+        oldest = (start - timedelta(hours=max(0, 72 - hours))).date().isoformat()
+        out = [s for s in complete[-1:] if s["date"] >= oldest]
         if stats[-1]["provisional"]:
             out.append(stats[-1])
         return out

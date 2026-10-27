@@ -20,8 +20,10 @@ class Thresholds:
         return self
 
 
-def session_stats(bars: list[dict], lookback: int = 20) -> list[dict]:
-    """Per-session change and volume-vs-average. Provisional (intraday) bars are kept but flagged."""
+def session_stats(bars: list[dict], lookback: int = 20, gaps: list[str] | None = None) -> list[dict]:
+    """Per-session change and volume-vs-average. Provisional (intraday) bars are kept but flagged.
+    ``gaps`` are sessions the data source has no print for: a change spanning one is not "in a day"."""
+    gapset = set(gaps or [])
     out: list[dict] = []
     complete_vols: list[int] = []
     closes_window: list[float] = []
@@ -44,6 +46,7 @@ def session_stats(bars: list[dict], lookback: int = 20) -> list[dict]:
                 "avg_volume": round(avg_vol) if avg_vol else None,
                 "vol_ratio": round(b["volume"] / avg_vol, 2) if avg_vol and b["volume"] else None,
                 "provisional": bool(b.get("provisional")),
+                "since": prev["date"] if prev and any(prev["date"] < g < b["date"] for g in gapset) else None,
                 "high_52w": hi,
                 "low_52w": lo,
             }
@@ -53,12 +56,18 @@ def session_stats(bars: list[dict], lookback: int = 20) -> list[dict]:
     return out
 
 
+def _short_date(d: str) -> str:
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    return f"{int(d[8:10])} {months[int(d[5:7]) - 1]}"
+
+
 def evaluate(stat: dict, t: Thresholds) -> list[dict]:
     """Which thresholds a single session breaches."""
     hits: list[dict] = []
     chg = stat.get("change_pct")
     if chg is not None and abs(chg) >= t.price_pct:
-        hits.append({"kind": "price", "label": f"{'+' if chg > 0 else '−'}{abs(chg):.1f}% in a day", "value": chg})
+        span = f"since {_short_date(stat['since'])}" if stat.get("since") else "in a day"
+        hits.append({"kind": "price", "label": f"{'+' if chg > 0 else '−'}{abs(chg):.1f}% {span}", "value": chg})
     vr = stat.get("vol_ratio")
     if vr is not None and not stat.get("provisional") and vr >= t.vol_x:
         hits.append({"kind": "volume", "label": f"{vr:.1f}× normal volume", "value": vr})

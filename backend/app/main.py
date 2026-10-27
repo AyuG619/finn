@@ -197,7 +197,7 @@ async def portfolio(symbols: str | None = None, lookback: int = 20):
             hx = await prices.history(h["symbol"], "1y")
         except Exception as exc:  # noqa: BLE001
             return {**h, "error": str(exc)[:120]}
-        stats = session_stats(hx["bars"], lookback)
+        stats = session_stats(hx["bars"], lookback, hx.get("gaps"))
         last = stats[-1]
         complete = [s for s in stats if not s["provisional"]]
         lc = complete[-1] if complete else last
@@ -381,4 +381,4 @@ async def spa(full_path: str, request: Request):
     index = root / "index.html"
     if index.is_file():
         return FileResponse(index, headers={"Cache-Control": "no-cache"})
-    return JSONResponse({"detail": "frontend not built"}, status_code=503)
+    return JSONResponse({"detail": "frontend not built"}, status_code=503, headers={"Cache-Control": "no-store"})

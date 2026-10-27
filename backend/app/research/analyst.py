@@ -211,8 +211,19 @@ def material_text(company: str, transcripts: list[dict], ar: dict | None, rest_i
     return "\n".join(lines)
 
 
+_STOP = {"the", "for", "of", "in", "to", "and", "by", "with", "a", "an", "on", "at", "company", "its", "be", "will", "over", "from"}
+
+
 def _tokens(s: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z0-9]+", (s or "").lower()) if len(w) > 2}
+    return {w for w in re.findall(r"[a-z0-9]+", (s or "").lower()) if w not in _STOP and (len(w) > 2 or w.isdigit())}
+
+
+def _same_promise(a: str, b: str) -> bool:
+    """Overlap coefficient on content words (numbers included, so 15% vs 20% stay distinct)."""
+    ta, tb = _tokens(a), _tokens(b)
+    if min(len(ta), len(tb)) < 3:
+        return False
+    return len(ta & tb) / min(len(ta), len(tb)) > 0.8
 
 
 def merge_promises(computed: list[dict], model_promises: list[dict]) -> list[dict]:
@@ -227,8 +238,7 @@ def merge_promises(computed: list[dict], model_promises: list[dict]) -> list[dic
             if not by_id[p["id"]].get("promise"):
                 by_id[p["id"]]["promise"] = p["promise"]
             continue
-        tp = _tokens(p["promise"])
-        if any(len(tp & _tokens(c["promise"])) / max(1, len(tp | _tokens(c["promise"]))) > 0.5 for c in computed):
+        if any(_same_promise(p["promise"], c.get("promise") or "") for c in computed):
             continue
         if p.get("outcome") not in ("delivered", "missed", "partly", "pending", "revised", "unverifiable"):
             p["outcome"] = "unverifiable"

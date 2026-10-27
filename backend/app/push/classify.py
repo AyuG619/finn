@@ -29,7 +29,7 @@ CATEGORIES: dict[str, str] = {
     "postal_ballot": "Postal ballot",
     "agm_egm": "AGM / EGM",
     "pledging": "Pledging",
-    "unclassified": "Routine paperwork",
+    "unclassified": "Compliance filings",
 }
 
 TIER_HIGH = 70

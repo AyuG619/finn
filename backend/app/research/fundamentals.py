@@ -72,6 +72,15 @@ def fmt_cr(v: float) -> str:
     return f"{sign}₹{a:,.0f} cr"
 
 
+def _month_label(k: str) -> str:
+    """'2026-09-30' -> "Sep '26" (screener adds a half-year balance-sheet column)."""
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    try:
+        return f"{months[int(k[5:7]) - 1]} '{k[2:4]}"
+    except (ValueError, IndexError):
+        return k
+
+
 def _sig(tone: str, text: str) -> dict:
     return {"tone": tone, "text": text}
 
@@ -239,6 +248,13 @@ def trajectory(page: dict) -> dict:
                                 f"{'Margin expanded' if d > 0 else 'Margin compressed'} {abs(d):.0f} bps over 3 years ({opm[-4][1]:.1f}% in {opm[-4][0]} → {opm[-1][1]:.1f}% in {opm[-1][0]})"))
         else:
             signals.append(_sig("neutral", f"Margins broadly stable over 3 years ({opm[-4][1]:.1f}% → {opm[-1][1]:.1f}%)"))
+    lq = next((x for x in reversed(qr) if x.get("opm") is not None), None)
+    if lq and opm:
+        gap = (lq["opm"] - opm[-1][1]) * 100
+        if gap <= -200:
+            signals.append(_sig("bad", f"The latest quarter breaks the trend: {lq['label']} margin {lq['opm']:.1f}% is {abs(gap):.0f} bps below {opm[-1][0]}'s {opm[-1][1]:.1f}%"))
+        elif gap >= 200:
+            signals.append(_sig("good", f"{lq['label']} margin {lq['opm']:.1f}% is {gap:.0f} bps above {opm[-1][0]}'s {opm[-1][1]:.1f}%"))
     if growth.get("pat") and growth.get("revenue") and growth["pat"]["cagr_3y"] is not None and growth["revenue"]["cagr_3y"] is not None:
         gp, gr = growth["pat"]["cagr_3y"], growth["revenue"]["cagr_3y"]
         if gp > gr + 4:
@@ -274,7 +290,7 @@ def balance_sheet(page: dict) -> dict:
         for k in bs["keys"]:
             e = (eq.get(k) or 0) + (res.get(k) or 0) if eq.get(k) is not None else None
             years.append({
-                "label": fy_label(k) if k.endswith("-03-31") else k,
+                "label": fy_label(k) if k.endswith("-03-31") else _month_label(k),
                 "period": k,
                 "equity": e,
                 "debt": debt.get(k),
