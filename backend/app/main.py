@@ -377,6 +377,30 @@ async def diag():
     return dict(results)
 
 
+@app.get("/api/diag/filing")
+async def diag_filing(id: str, chars: int = 2500):
+    """What FINN reads from a filing: page count, text layer, the pages picked for results, their text."""
+    from .sources import pdfs
+
+    reg = digest_mod.registered(id)
+    if not reg:
+        raise HTTPException(404, "unknown filing (open the digest first)")
+    url = reg["filing"].get("pdf_url")
+    if not url:
+        return {"pdf": None}
+    data = await pdfs.fetch_pdf(url)
+    pages = await asyncio.to_thread(pdfs._extract, data, 60)
+    picked = pdfs.pick_results_pages(pages, 2)
+    return {
+        "pdf": url,
+        "bytes": len(data),
+        "pages": len(pages),
+        "text_layer": pdfs.has_text_layer(pages[:6]),
+        "picked": [p + 1 for p in picked],
+        "text": {p + 1: pages[p][: max(200, min(chars, 6000))] for p in picked},
+    }
+
+
 # --------------------------------------------------------------------------- static frontend
 
 @app.get("/{full_path:path}", include_in_schema=False)
