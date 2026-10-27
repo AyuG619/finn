@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/AskBar.tsx","./src/api.ts","./src/charts.tsx","./src/enrich.ts","./src/format.ts","./src/icons.tsx","./src/main.tsx","./src/router.ts","./src/slips.tsx","./src/store.ts","./src/ui.tsx","./src/vite-env.d.ts","./src/views/Book.tsx","./src/views/Brief.tsx","./src/views/Research.tsx","./src/views/Watch.tsx"],"version":"5.6.3"}

@@ -136,6 +136,7 @@ NSE_DESC_MAP: dict[str, tuple[str, str | None, int]] = {
     "pendency of litigation(s)/dispute(s) or the outcome impacting the company": ("litigation", None, 65),
     "action(s) initiated or orders passed": ("litigation", None, 66),
     "product launch": ("press_release", None, 40),
+    "press release": ("press_release", None, 42),
     "buyback": ("fund_raise", "buyback", 70),
     "acquisition": ("m_and_a", None, 70),
     "amalgamation/merger": ("m_and_a", None, 66),
@@ -173,7 +174,9 @@ KEYWORD_RULES: list[tuple[re.Pattern, str, str | None, int]] = [
     (_R(r"\bqip\b|qualified institution|preferential (issue|allotment)|rights issue|raising of funds|fund ?rais|issue of (non-convertible )?debentures|\bncds?\b|commercial paper|warrants"), "fund_raise", None, 55),
     (_R(r"insolvency|\bcirp\b|\bnclt\b|\bnclat\b|show cause|penalty|\bfine\b|demand order|tax demand|gst demand|income tax (demand|order|search)|search and seizure|litigation|arbitra|court|tribunal|regulatory action|sebi order|adjudicat|enforcement directorate"), "litigation", None, 62),
     (_R(r"acqui|merger|amalgamat|demerger|joint venture|\bjv\b|share purchase agreement|stake (sale|purchase|acquisition)|divest|disinvest|scheme of arrangement|incorporation of (a )?(wholly owned )?(step-?down )?subsidiar"), "m_and_a", None, 66),
-    (_R(r"resign|appoint|cessation|re-?appoint|re-?designat|retire|demise|key managerial|\bkmp\b|\bceo\b|\bcfo\b|managing director|whole[- ]?time director|chairman|chairperson|change in (director|management)"), "management_change", None, 50),
+    # A title alone (an award to the CMD, a CEO interview) is not a management change: require a change verb.
+    (_R(r"\b(resign|appoint|cessation|re-?appoint|re-?designat|retire|demise|steps? down|stepping down|relinquish|elevat)\w*|change in (director|management|key managerial)"), "management_change", None, 50),
+    (_R(r"\baward(s|ed)?\b(?! of (order|contract))|recogni[sz](ed|ition)|accolade|felicitat|certified as|ranked among"), "press_release", "recognition", 22),
     (_R(r"capex|capacity expansion|new (plant|facility|unit)|greenfield|brownfield|commission(ing|ed)|capital expenditure|expansion"), "capex", None, 60),
     (_R(r"dividend"), "dividend", None, 34),
     (_R(r"record date"), "dividend", "record_date", 22),
@@ -188,6 +191,7 @@ _RESULTS_RE = _R(
 )
 _RESULTS_DATE_RE = _R(r"(to consider|consider and approve|scheduled on|board meeting (will be )?(held|scheduled)|intimation of board meeting|prior intimation)")
 _RESULTS_ANCILLARY_RE = _R(r"press release|investor presentation|earnings presentation|newspaper|publication|media release|shareholder letter|fact ?sheet")
+_QUARTER_REVIEW_RE = _R(r"(performance|earnings|business) (review|update|highlights)|(quarter|half[- ]year|nine months) ended|\bq[1-4] ?(fy)? ?'?\d{2}\b|\bh[12] ?fy")
 _GENERIC_DETAIL_RE = _R(r"^(as enclosed|as attached|please find (the )?(attached|enclosed)|enclosed herewith|attached herewith|kindly find|copy of|intimation|disclosure|announcement)\W*$")
 
 _TOP_ROLE_RE = _R(r"\b(ceo|chief executive|managing director|\bmd\b|cfo|chief financial|chairman|chairperson|whole[- ]?time director|executive director|joint managing|deputy managing|group president|chief operating|\bcoo\b)\b")
@@ -272,7 +276,7 @@ def classify(f: dict) -> Classification:
             return Classification("investor_meetings", "deck", 20, "investor presentation")
         if sub == "newspaper publication" and _RESULTS_RE.search(low):
             return Classification("results", "ancillary", 6, "results published in newspapers")
-        if category == "press_release" and subtype is None and _RESULTS_RE.search(low):
+        if category == "press_release" and subtype is None and (_RESULTS_RE.search(low) or _QUARTER_REVIEW_RE.search(low)):
             return Classification("results", "ancillary", 35, "results press release")
         if category == "management_change" and subtype is None:
             role, _ = management_role(text)
@@ -292,6 +296,8 @@ def classify(f: dict) -> Classification:
         return Classification("management_change", role, MGMT_SCORES[role], f"management change ({role.replace('_', ' ')})")
     if not sub and cat in NSE_DESC_MAP:
         category, subtype, base = NSE_DESC_MAP[cat]
+        if category == "press_release" and subtype is None and (_RESULTS_RE.search(low) or _QUARTER_REVIEW_RE.search(low)):
+            return Classification("results", "ancillary", 35, "results press release")
         if category == "results" and subtype == "deck" and not _RESULTS_RE.search(low) and "quarter" not in low:
             return Classification("investor_meetings", "deck", 20, "investor presentation")
         if subtype == "allotment" and re.search(r"qualified institution|\bqip\b|preferential|rights", low):
@@ -412,7 +418,8 @@ def materiality(f: dict, c: Classification, market_cap_cr: float | None = None) 
                 score += 6
             elif pct < 0.05:
                 score -= 12
-            why.append(f"₹{biggest:,.0f} cr ≈ {pct:.2f}% of market cap")
+            amt = f"₹{biggest / 100000:.2f} lakh cr" if biggest >= 100000 else f"₹{biggest:,.0f} cr"
+            why.append(f"{amt} ≈ {pct:.2f}% of market cap")
     if c.category == "credit_rating":
         d = rating_direction(low)
         if d == "downgrade":

@@ -140,7 +140,17 @@ _LONG_DATE_RE = re.compile(r"(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march
 _MONTHS = {m: i for i, m in enumerate(["", "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"])}
 
 
+_MON = {m: i for i, m in enumerate(["", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+_DMY_RE = re.compile(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})")
+
+
 def meeting_date(text: str) -> str | None:
+    m3 = _DMY_RE.search(text)
+    if m3 and m3.group(2).lower() in _MON:
+        try:
+            return date(int(m3.group(3)), _MON[m3.group(2).lower()], int(m3.group(1))).isoformat()
+        except ValueError:
+            pass
     m = re.search(r"scheduled (?:on|for)\s+(\d{1,2}/\d{1,2}/\d{4})", text, re.I) or _DATE_RE.search(text)
     try:
         if m:
@@ -260,7 +270,7 @@ async def build(prefs: Prefs) -> dict:
             it["tier"] = "notable"
         it["rank"] = round(it["score"] + it["weight"] * 0.8, 1)
 
-    items = _bundle_results(items)
+    items = _bundle_management(_bundle_results(items))
 
     # Price & volume moves.
     moves = []
@@ -340,6 +350,29 @@ async def build(prefs: Prefs) -> dict:
         "quiet": quiet,
         "source_errors": source_errors,
     }
+
+
+def _bundle_management(items: list[dict]) -> list[dict]:
+    """A CFO's exit and their successor's appointment are one event: one card per company."""
+    by_sym: dict[str, list[dict]] = defaultdict(list)
+    rest = []
+    for it in items:
+        if it["category"] == "management_change" and it["tier"] != "routine":
+            by_sym[it["symbol"]].append(it)
+        else:
+            rest.append(it)
+    for sym, group in by_sym.items():
+        group.sort(key=lambda g: (-g["score"], g["time"]))
+        main = group[0]
+        if len(group) > 1:
+            main["related"] = [
+                {"id": g["id"], "subject": g.get("detail") or g["subject"], "time": g["time"], "pdf_url": g.get("pdf_url"), "category_label": g["category_label"]}
+                for g in group[1:]
+            ]
+            main["score"] = min(100, main["score"] + 2)
+            main["rank"] = round(main["score"] + main["weight"] * 0.8, 1)
+        rest.append(main)
+    return rest
 
 
 def _bundle_results(items: list[dict]) -> list[dict]:

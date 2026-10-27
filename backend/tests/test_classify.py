@@ -88,6 +88,8 @@ NSE_CASES = [
     ("Capacity addition", "Ather Energy Limited has informed the Exchange that the Board at the meeting held today has considered and approved proposals for the enhancement of manufacturing capacit", "capex", "notable"),
     ("Board Meeting Intimation", "Infosys Limited has informed the Exchange about Board Meeting to be held on 16-Jan-2027 to consider financial results", "results", "routine"),
     ("General Updates", "Apollo Micro Systems Limited has informed the Exchange about General Updates", "unclassified", "routine"),
+    ("Updates", "Zen Technologies Limited has informed the Exchange regarding Intimation regarding Business Today s Most Powerful Women in Business (MPW) Award received by Ms. Shilpa Choudari, Whole-time Director", "press_release", "routine"),
+    ("Press Release", 'ICICI Bank Limited has informed the Exchange regarding a press release dated October 26, 2026, titled "Performance review: quarter ended September 30, 2026"', "results", "routine"),
     ("Integrated Filing- Financial", "Integrated Filing (Financial) for the quarter and half-year ended 30th September, 2026.", "results", "high"),
 ]
 
@@ -134,3 +136,11 @@ def test_clean_subject():
     assert clean_subject("Announcement under Regulation 30 (LODR)-Credit Rating") == "Credit Rating"
     assert clean_subject("Initial Public Offer Of Jio Platforms Limited - Update") == "Initial Public Offer Of Jio Platforms Limited - Update"
     assert clean_subject("Bajel Projects Ltd - 544042 - Announcement under Regulation 30 (LODR)-Award_of_Order_Receipt_of_Order") == "Award of Order Receipt of Order"
+
+
+def test_meeting_dates():
+    from app.push.digest import meeting_date
+
+    assert meeting_date("Board Meeting to be held on 27-Oct-2026 to consider financial results") == "2026-10-27"
+    assert meeting_date("is scheduled on 04/11/2026 ,inter alia, to consider") == "2026-11-04"
+    assert meeting_date("meeting on Tuesday, 3rd November, 2026 to approve") == "2026-11-03"

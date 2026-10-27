@@ -427,7 +427,16 @@ async def enrich(filing: dict, ctx: dict) -> dict:
 
 def apply_refinement(item: dict, card: dict | None) -> None:
     """Let the model's reading of the filing adjust category/materiality of rule-based guesses."""
-    if not card or card.get("kind") != "summary":
+    if not card:
+        return
+    if card.get("kind") == "management" and card.get("llm") and not card.get("changes"):
+        # The rules saw a title; the filing itself says nobody's position changed.
+        item["category"] = "press_release"
+        item["category_label"] = CATEGORIES["press_release"]
+        item["score"] = min(item["score"], 30)
+        item["why"] = item.get("why", []) + ["filing shows no change in position"]
+        return
+    if card.get("kind") != "summary":
         return
     m = card.get("materiality")
     if card.get("category") and item.get("needs_model"):

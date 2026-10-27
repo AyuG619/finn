@@ -63,6 +63,15 @@ def _margin(op: float | None, rev: float | None, reported: float | None) -> floa
     return reported
 
 
+def fmt_cr(v: float) -> str:
+    """₹ crore the way Indian investors read it: 129190 -> '₹1.29 lakh cr', 15119 -> '₹15,119 cr'."""
+    a = abs(v)
+    sign = "−" if v < 0 else ""
+    if a >= 100000:
+        return f"{sign}₹{a / 100000:.2f} lakh cr"
+    return f"{sign}₹{a:,.0f} cr"
+
+
 def _sig(tone: str, text: str) -> dict:
     return {"tone": tone, "text": text}
 
@@ -183,7 +192,7 @@ def financial_snapshot(page: dict) -> dict:
             typical = others[len(others) // 2]
             if typical > 0 and base["other_income"] > 2.2 * typical:
                 signals.append(_sig("neutral", f"The year-ago quarter ({base['label']}) carried unusually high other income "
-                                    f"(₹{base['other_income']:,.0f} cr vs ~₹{typical:,.0f} cr typical), so the PAT YoY comparison is distorted"))
+                                    f"({fmt_cr(base['other_income'])} vs ~{fmt_cr(typical)} typical), so the PAT YoY comparison is distorted"))
         if lq.get("other_income") and lq.get("pbt") and lq["pbt"] > 0 and lq["other_income"] / lq["pbt"] > 0.25 and not bank:
             signals.append(_sig("bad", f"Other income is {lq['other_income'] / lq['pbt'] * 100:.0f}% of {lq['label']} PBT: profit quality depends on non-operating items"))
     return {
@@ -377,7 +386,7 @@ def cash_quality(page: dict) -> dict:
         if neg >= 3:
             signals.append(_sig("bad", f"Free cash flow negative in {neg} of the last {len(fv)} years: growth is being funded externally or from reserves"))
         else:
-            signals.append(_sig("good" if total > 0 else "neutral", f"Cumulative free cash flow over {len(fv)} years: ₹{total:,.0f} cr"))
+            signals.append(_sig("good" if total > 0 else "neutral", f"Cumulative free cash flow over {len(fv)} years: {fmt_cr(total)}"))
     return {"id": "cash_quality", "title": "Cash quality", "years": years[-6:], "cfo_to_pat_5y": cum, "signals": signals,
             "source": "screener.in standardised filings"}
 
