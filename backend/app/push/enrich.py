@@ -337,6 +337,7 @@ async def results_card(filing: dict, ctx: dict) -> dict:
     page_bank = bool(page and page.get("is_bank"))
     accepted = None
     rejected: list[dict] = []
+    reads: list[dict] = []  # what each pass did, for the slip's provenance line and /api/diag
     if available() and filing.get("pdf_url"):
         try:
             data = await pdfs.fetch_pdf(filing["pdf_url"])
@@ -371,9 +372,11 @@ async def results_card(filing: dict, ctx: dict) -> dict:
                 except LLMUnavailable as exc:
                     log.info("results pass %d (%s/%s) failed for %s: %s", n, mode, tier, filing.get("id"), str(exc)[:200])
                     card["note"] = "Couldn't read the filing (models busy or the statement didn't add up)."
+                    reads.append({"pass": n, "mode": mode, "tier": tier, "error": str(exc)[:240]})
                     continue
                 except Exception as exc:  # noqa: BLE001
                     log.warning("results pass %d failed for %s: %s", n, filing.get("id"), exc)
+                    reads.append({"pass": n, "mode": mode, "tier": tier, "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
                     continue
                 read = read_results(res.data if isinstance(res.data, dict) else {}, page_bank, sniffed, qe)
                 ref = await _reference_page(symbol, page, read["basis"])
@@ -384,10 +387,15 @@ async def results_card(filing: dict, ctx: dict) -> dict:
                     read["unit_corrected"] = True
                 ver = cross_check(read["heads"], refs, read["bank"])
                 read.update({"verified": ver, "llm": res.to_meta(), "pages": [p + 1 for p in picked], "pass": n, "mode": mode})
+                reads.append({"pass": n, "mode": mode, "tier": tier, "model": res.model, "ok": bool(ver is None or ver["ok"]),
+                              "revenue_diff_pct": ver and ver["revenue_diff_pct"], "unit_corrected": bool(f)})
                 if ver is None or ver["ok"]:
                     accepted = read
                     break
                 rejected.append(read)
+    if reads:
+        card["reads"] = reads
+    retry_later = any("error" in r for r in reads)  # a pass that couldn't run (rate limits): try again later
     if accepted:
         card.pop("note", None)
         metrics, margins = build_metrics(accepted["heads"]["current"], accepted["heads"]["previous_quarter"],
@@ -419,10 +427,14 @@ async def results_card(filing: dict, ctx: dict) -> dict:
         card.update({"metrics": metrics, "margins": margins, "basis": page.get("basis"), "is_bank": bank,
                      "source": "screener.in standardised table"})
         if rejected:
-            worst = min(rejected, key=lambda r: r["verified"]["revenue_diff_pct"])
-            card["filing_read_rejected"] = f"FINN's read of the filing differed from screener by {worst['verified']['revenue_diff_pct']:.1f}% on revenue"
-            card["verified"] = {**worst["verified"], "against": "results filing"}
-            card["llm"] = worst["llm"]
+            best = min(rejected, key=lambda r: r["verified"]["revenue_diff_pct"])
+            cur = next((c for c in best["verified"]["checks"] if c["column"] == "current"), None)
+            gap = cur["revenue_diff_pct"] if cur and cur["revenue_diff_pct"] is not None else best["verified"]["revenue_diff_pct"]
+            card["filing_read_rejected"] = f"FINN's read of the filing differed from screener by {gap:.1f}% on revenue"
+            card["verified"] = {**best["verified"], "against": "results filing"}
+            card["llm"] = best["llm"]
+        if retry_later:
+            card["provisional"] = True
         return card
     if rejected:
         # Too fresh for screener and our read disagrees with it on earlier quarters: show it, flagged.
@@ -626,7 +638,7 @@ async def summary_card(filing: dict, ctx: dict) -> dict:
 # --------------------------------------------------------------------------- dispatcher
 
 def enrichment_key(filing_id: str) -> str:
-    return f"enrich:v3:{filing_id}"
+    return f"enrich:v4:{filing_id}"
 
 
 _inflight: dict[str, asyncio.Task] = {}

@@ -84,6 +84,7 @@ usage: dict = {
 }
 
 _slots: dict[str, list[ModelSlot]] = {"fast": [], "smart": []}
+_available_models: dict[str, list[str]] = {}
 _discovered = False
 _discover_lock = asyncio.Lock()
 _client: httpx.AsyncClient | None = None
@@ -191,6 +192,7 @@ async def discover(force: bool = False) -> dict:
         if GEMINI_API_KEY:
             try:
                 names = await _list_gemini()
+                _available_models["gemini"] = sorted(names)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Gemini model listing failed: %s", exc)
                 usage["errors"].append({"t": time.time(), "where": "gemini:list", "error": str(exc)[:300]})
@@ -204,6 +206,7 @@ async def discover(force: bool = False) -> dict:
         if GROQ_API_KEY:
             try:
                 gnames = set(await _list_groq())
+                _available_models["groq"] = sorted(gnames)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Groq model listing failed: %s", exc)
                 usage["errors"].append({"t": time.time(), "where": "groq:list", "error": str(exc)[:300]})
@@ -272,6 +275,7 @@ def _meter(task: str, slot: ModelSlot, tin: int, tout: int) -> None:
 
 def usage_report() -> dict:
     return {
+        "models_on_keys": _available_models,
         "calls": usage["calls"],
         "cache_hits": usage["cache_hits"],
         "input_tokens": usage["input_tokens"],

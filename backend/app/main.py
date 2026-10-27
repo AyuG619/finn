@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import cache, http
-from .config import REFRESH_MINUTES, STATIC_DIR, WARM_DELAY_MIN, WARM_RESEARCH
+from .config import DATA_DIR, REFRESH_MINUTES, STATIC_DIR, WARM_DELAY_MIN, WARM_RESEARCH
 from .llm import router as llm
 from .portfolio import PORTFOLIO, RESEARCH_SET
 from .push import digest as digest_mod
@@ -145,10 +145,36 @@ def _prefs_from(p: dict, hours: float | None = None) -> digest_mod.Prefs:
 
 # --------------------------------------------------------------------------- routes
 
+def _rss_mb() -> float | None:
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except OSError:
+        return None
+    return None
+
+
+def _count_boot() -> int:
+    """Process starts in this container: more than one means the process was restarted (e.g. out of memory)."""
+    p = Path(DATA_DIR) / "boots.txt"
+    try:
+        n = int(p.read_text().strip() or 0) + 1 if p.exists() else 1
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(n))
+        return n
+    except (OSError, ValueError):
+        return 1
+
+
+BOOTS = _count_boot()
+
+
 @app.get("/api/health")
 async def health():
     return {"ok": True, "uptime_s": round(time.time() - STARTED), "last_refresh": state["last_refresh"], "refreshes": state["refreshes"],
-            "last_refresh_error": state["last_refresh_error"]}
+            "last_refresh_error": state["last_refresh_error"], "rss_mb": _rss_mb(), "boots": BOOTS}
 
 
 @app.get("/api/config")
