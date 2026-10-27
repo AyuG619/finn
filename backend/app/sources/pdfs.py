@@ -1,0 +1,163 @@
+"""Download PDFs, extract text page by page, and cut them down to the pages that matter.
+
+Exchange filings are frequently scanned, signed images with no text layer, and annual reports run
+to 300-500 pages. Two rules keep this cheap: (1) only the relevant pages are ever sent to a model,
+(2) text is sent when a text layer exists, the trimmed PDF itself (for vision) only when it doesn't.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+
+import fitz  # PyMuPDF
+
+from .. import cache, http
+
+log = logging.getLogger("finn.pdfs")
+
+MAX_PDF_BYTES = 80 * 1024 * 1024
+
+
+class PdfError(RuntimeError):
+    pass
+
+
+def _candidates(url: str) -> list[str]:
+    """BSE's AnnPdfOpen redirector can be slow; try the direct archive paths first."""
+    m = re.search(r"AnnPdfOpen\.aspx\?Pname=([\w\-]+\.pdf)", url, re.I)
+    if m:
+        from .bse import pdf_candidates
+
+        return pdf_candidates(m.group(1))
+    return [url]
+
+
+async def fetch_pdf(url: str) -> bytes:
+    """Bytes of a PDF (disk-cached forever: filings never change once published)."""
+    blob = cache.get_blob(url, ".pdf")
+    if blob is not None:
+        return blob
+    last: Exception | None = None
+    for cand in _candidates(url):
+        try:
+            resp = await http.request("GET", cand, retries=1, timeout=60.0)
+        except Exception as exc:  # noqa: BLE001 - try the next candidate
+            last = exc
+            continue
+        data = resp.content
+        if len(data) > MAX_PDF_BYTES:
+            raise PdfError(f"PDF too large ({len(data) // 1_000_000} MB)")
+        if not data.startswith(b"%PDF"):
+            last = PdfError(f"not a PDF at {cand} ({resp.headers.get('content-type')})")
+            continue
+        cache.put_blob(url, data, ".pdf")
+        return data
+    raise PdfError(f"could not download {url}: {last}")
+
+
+def _extract(data: bytes, max_pages: int | None) -> list[str]:
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception as exc:  # noqa: BLE001
+        raise PdfError(f"unreadable PDF: {exc}") from exc
+    try:
+        n = doc.page_count if max_pages is None else min(doc.page_count, max_pages)
+        return [doc.load_page(i).get_text("text") for i in range(n)]
+    finally:
+        doc.close()
+
+
+async def page_texts(url: str, max_pages: int | None = None) -> list[str]:
+    """Per-page text for a PDF URL (cached)."""
+
+    async def compute() -> list[str]:
+        data = await fetch_pdf(url)
+        return await asyncio.to_thread(_extract, data, max_pages)
+
+    return await cache.cached(f"pdftext:{url}:{max_pages}", cache.FOREVER, compute, mem=False)
+
+
+def page_count(data: bytes) -> int:
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        return doc.page_count
+
+
+def has_text_layer(pages: list[str], min_chars: int = 250) -> bool:
+    if not pages:
+        return False
+    rich = sum(1 for p in pages if len(p.strip()) >= min_chars)
+    return rich >= max(1, len(pages) // 3)
+
+
+def trim_pdf(data: bytes, pages: list[int]) -> bytes:
+    """A new PDF containing only ``pages`` (0-based), in order."""
+    src = fitz.open(stream=data, filetype="pdf")
+    out = fitz.open()
+    try:
+        for p in pages:
+            if 0 <= p < src.page_count:
+                out.insert_pdf(src, from_page=p, to_page=p)
+        return out.tobytes(garbage=3, deflate=True)
+    finally:
+        out.close()
+        src.close()
+
+
+def score_pages(pages: list[str], keywords: dict[str, float]) -> list[tuple[int, float]]:
+    """Score pages by weighted keyword hits; returns [(page_index, score)] sorted best-first."""
+    scored = []
+    for i, text in enumerate(pages):
+        low = text.lower()
+        s = 0.0
+        for kw, w in keywords.items():
+            hits = low.count(kw)
+            if hits:
+                s += w * min(hits, 5)
+        scored.append((i, s))
+    return sorted(scored, key=lambda t: (-t[1], t[0]))
+
+
+RESULTS_KEYWORDS = {
+    "statement of unaudited": 6,
+    "statement of audited": 6,
+    "financial results": 3,
+    "quarter ended": 3,
+    "three months ended": 3,
+    "revenue from operations": 4,
+    "total income": 2,
+    "profit before tax": 4,
+    "finance cost": 2,
+    "depreciation": 2,
+    "net profit": 2,
+    "profit for the period": 3,
+    "consolidated": 2,
+    "earnings per share": 1,
+    "interest earned": 3,  # banks
+    "operating profit": 2,
+}
+
+
+def pick_results_pages(pages: list[str], limit: int = 4) -> list[int]:
+    """The pages of a results filing that carry the P&L statement (consolidated first)."""
+    scored = [(i, s) for i, s in score_pages(pages, RESULTS_KEYWORDS) if s > 0]
+    if not scored:
+        return list(range(min(limit, len(pages))))
+    best = [i for i, _ in scored[:limit]]
+    return sorted(best)
+
+
+def numbered_text(pages: list[str], indices: list[int], max_chars: int) -> str:
+    """Concatenate selected pages with [p.N] markers (1-based) so models can cite pages."""
+    out, total = [], 0
+    for i in indices:
+        t = re.sub(r"[ \t]+", " ", pages[i]).strip()
+        t = re.sub(r"\n{3,}", "\n\n", t)
+        chunk = f"\n[p.{i + 1}]\n{t}\n"
+        if total + len(chunk) > max_chars:
+            chunk = chunk[: max(0, max_chars - total)]
+        out.append(chunk)
+        total += len(chunk)
+        if total >= max_chars:
+            break
+    return "".join(out)

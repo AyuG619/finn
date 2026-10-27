@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.finn-data/
+.pytest_cache/
+node_modules/
+frontend/.vite/
+*.log
+.env
+.env.*
