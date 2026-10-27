@@ -578,8 +578,9 @@ async def complete(
                 usage["errors"].append({"t": time.time(), "where": slot.key, "task": task, "error": str(rl)})
                 continue
             except (_BadRequest, httpx.HTTPError) as exc:
-                errors.append(f"{slot.key}: {exc}")
-                usage["errors"].append({"t": time.time(), "where": slot.key, "task": task, "error": str(exc)[:300]})
+                msg = str(exc) or type(exc).__name__  # httpx timeouts have an empty message
+                errors.append(f"{slot.key}: {msg}")
+                usage["errors"].append({"t": time.time(), "where": slot.key, "task": task, "error": msg[:300]})
                 continue
             _meter(task, slot, tin or estimate_tokens(full_prompt), tout or estimate_tokens(text))
             data = None

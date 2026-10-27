@@ -113,6 +113,16 @@ def trim_pdf(data: bytes, pages: list[int]) -> bytes:
         src.close()
 
 
+def raster_pages(data: bytes, pages: list[int], dpi: int = 160) -> bytes:
+    """``pages`` re-rendered as plain images in a new PDF. For a model's second look at a scanned filing:
+    the image alone, without the (often garbled) OCR text layer that came with it."""
+    src = fitz.open(stream=data, filetype="pdf")
+    try:
+        return _raster_pdf(src, [p for p in pages if 0 <= p < src.page_count], dpi)
+    finally:
+        src.close()
+
+
 def _raster_pdf(src, pages: list[int], dpi: int = 150) -> bytes:
     out = fitz.open()
     try:

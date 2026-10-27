@@ -353,18 +353,20 @@ async def results_card(filing: dict, ctx: dict) -> dict:
             text_layer = pdfs.has_text_layer(pages[:10])
             picked = pdfs.pick_results_pages(pages, 2) if text_layer else list(range(min(10, len(pages) or pdfs.page_count(data))))
             sniffed = sniff_unit(" ".join(pages[i] for i in picked if i < len(pages))) if text_layer else None
-            passes = ([("text", "fast")] if text_layer else [("vision", "fast")]) + [("vision", "smart")]
-            trimmed = None
+            # Text layer: read the text; if that fails, look at the page images (re-rendered without the
+            # OCR layer), cheap model first. No text layer: the scanned pages themselves.
+            passes = [("text", "fast"), ("vision", "fast"), ("vision", "smart")] if text_layer else [("vision", "fast"), ("vision", "smart")]
+            images = None
             for n, (mode, tier) in enumerate(passes, 1):
                 try:
-                    if mode == "vision" and trimmed is None:
-                        trimmed = await asyncio.to_thread(pdfs.trim_pdf, data, picked)
+                    if mode == "vision" and images is None:
+                        images = await asyncio.to_thread(pdfs.raster_pages if text_layer else pdfs.trim_pdf, data, picked)
                     res = await complete(
                         "results_extract" if mode == "text" else "results_extract_vision",
                         system=prompts.RESULTS_SYSTEM,
                         prompt=prompts.RESULTS_PROMPT,
                         document=pdfs.numbered_text(pages, picked, 40_000) if mode == "text" else "",
-                        pdf=trimmed if mode == "vision" else None,
+                        pdf=images if mode == "vision" else None,
                         tier=tier,
                         max_tokens=4096,
                         validate=_validate_results,
@@ -673,7 +675,7 @@ async def summary_card(filing: dict, ctx: dict) -> dict:
 # --------------------------------------------------------------------------- dispatcher
 
 def enrichment_key(filing_id: str) -> str:
-    return f"enrich:v6:{filing_id}"
+    return f"enrich:v7:{filing_id}"
 
 
 _inflight: dict[str, asyncio.Task] = {}

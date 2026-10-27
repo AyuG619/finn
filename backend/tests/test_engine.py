@@ -384,6 +384,7 @@ def _results_env(monkeypatch, reads, screener_quarters):
     monkeypatch.setattr(enrich.pdfs, "fetch_pdf", fake_pdf)
     monkeypatch.setattr(enrich.pdfs, "_extract", lambda data, n: ["cover " + "y" * 300, text_page, "notes " + "z" * 300])
     monkeypatch.setattr(enrich.pdfs, "trim_pdf", lambda data, pages: b"%PDF-trimmed")
+    monkeypatch.setattr(enrich.pdfs, "raster_pages", lambda data, pages: b"%PDF-images")
     return enrich, calls
 
 
@@ -394,7 +395,7 @@ async def test_results_card_second_read_fixes_a_bad_first_read(monkeypatch):
     enrich, calls = _results_env(monkeypatch, [_fake_extraction(45472, 48211, 44490), _fake_extraction(49244, 48211, 44490)],
                                  {"2025-09-30": 44490, "2026-06-30": 48211, "2026-09-30": 49244})
     card = await enrich.results_card(FILING, {"symbol": "INFY"})
-    assert calls == [("results_extract", "fast", False), ("results_extract_vision", "smart", True)]
+    assert calls == [("results_extract", "fast", False), ("results_extract_vision", "fast", True)]
     assert card["source"] == "results filing" and card["second_read"] and card["verified"]["ok"]
     assert card["metrics"][0]["value"] == 49244 and card["metrics"][0]["yoy"] == 10.7
     assert "provisional" not in card and "filing_read_rejected" not in card
@@ -402,9 +403,9 @@ async def test_results_card_second_read_fixes_a_bad_first_read(monkeypatch):
 
 async def test_results_card_falls_back_to_screener_when_both_reads_disagree(monkeypatch):
     bad = _fake_extraction(45472, 48211, 44490)
-    enrich, calls = _results_env(monkeypatch, [bad, bad], {"2025-09-30": 44490, "2026-06-30": 48211, "2026-09-30": 49244})
+    enrich, calls = _results_env(monkeypatch, [bad, bad, bad], {"2025-09-30": 44490, "2026-06-30": 48211, "2026-09-30": 49244})
     card = await enrich.results_card(FILING, {"symbol": "INFY"})
-    assert len(calls) == 2
+    assert [c[1] for c in calls] == ["fast", "fast", "smart"]
     assert card["source"] == "screener.in standardised table" and "7.7%" in card["filing_read_rejected"]
     assert card["metrics"][0]["value"] == 49244
 
@@ -434,6 +435,8 @@ def test_trim_pdf_keeps_selected_pages_and_raster_fallback():
     src = fitz.open(stream=data, filetype="pdf")
     raster = fitz.open(stream=pdfs._raster_pdf(src, [0, 2]), filetype="pdf")
     assert raster.page_count == 2 and raster.load_page(0).get_images()
+    clean = fitz.open(stream=pdfs.raster_pages(data, [1, 7]), filetype="pdf")
+    assert clean.page_count == 1 and clean.load_page(0).get_text().strip() == ""  # image only, no OCR layer
 
 
 def test_bio_keeps_only_linkedin_profiles_and_legible_sources():
