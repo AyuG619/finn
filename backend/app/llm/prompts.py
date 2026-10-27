@@ -84,7 +84,7 @@ Return JSON only:
   "confidence": "high"|"medium"|"low"}}"""
 
 BIO_SYSTEM = (
-    "You write concise professional backgrounds of business executives for investors. Use Google Search. Prefer "
+    "You write concise professional backgrounds of business executives for investors. Search the web. Prefer "
     "LinkedIn, the company's own website, stock-exchange filings and reputable business press. Make sure the person "
     "you describe is the same person (match the company and role). If you cannot find reliable information, say so; "
     "never invent employers, titles or dates."

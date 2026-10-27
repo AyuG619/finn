@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -365,8 +366,11 @@ async def diag():
 
     async def web():
         from .sources import websearch
-        r = await websearch.search('"Sandeep Jain" Bajaj Finance linkedin', 5)
-        return [x["url"] for x in r[:3]]
+        try:
+            r = await websearch.search('"Sandeep Jain" Bajaj Finance linkedin', 5)
+        finally:
+            engines = websearch.engine_status()
+        return {"urls": [x["url"] for x in r[:3]], "engines": engines}
 
     results = await asyncio.gather(
         probe("websearch", web()),
@@ -378,7 +382,7 @@ async def diag():
 
 
 @app.get("/api/diag/filing")
-async def diag_filing(id: str, chars: int = 2500):
+async def diag_filing(id: str, chars: int = 2500, page: int | None = None):
     """What FINN reads from a filing: page count, text layer, the pages picked for results, their text."""
     from .sources import pdfs
 
@@ -391,13 +395,16 @@ async def diag_filing(id: str, chars: int = 2500):
     data = await pdfs.fetch_pdf(url)
     pages = await asyncio.to_thread(pdfs._extract, data, 60)
     picked = pdfs.pick_results_pages(pages, 2)
+    show = [page - 1] if page and 0 < page <= len(pages) else picked
     return {
         "pdf": url,
         "bytes": len(data),
         "pages": len(pages),
         "text_layer": pdfs.has_text_layer(pages[:6]),
         "picked": [p + 1 for p in picked],
-        "text": {p + 1: pages[p][: max(200, min(chars, 6000))] for p in picked},
+        "scores": {i + 1: pdfs.pnl_score(t) for i, t in enumerate(pages)},
+        "heads": {i + 1: re.sub(r"\s+", " ", t[:160]) for i, t in enumerate(pages)},
+        "text": {p + 1: pages[p][: max(200, min(chars, 6000))] for p in show},
     }
 
 

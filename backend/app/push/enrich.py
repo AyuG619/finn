@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import logging
 import re
 from datetime import date, datetime
@@ -56,8 +57,9 @@ def headline_from_columns(col: dict, factor: float, is_bank: bool) -> dict:
 
     pbt = g("profit_before_tax")
     pat = g("net_profit_owners") if col.get("net_profit_owners") is not None else g("net_profit")
+    interest = g("interest_earned")
     if is_bank:
-        revenue = g("total_income") or ((g("interest_earned") or 0) + (g("other_income") or 0)) or None
+        revenue = g("total_income") or ((interest or 0) + (g("other_income") or 0)) or None
         ebitda = g("operating_profit_before_provisions")
         if ebitda is None and pbt is not None and g("provisions") is not None:
             ebitda = pbt + g("provisions")
@@ -67,7 +69,7 @@ def headline_from_columns(col: dict, factor: float, is_bank: bool) -> dict:
         if pbt is not None and g("finance_costs") is not None and g("depreciation") is not None:
             pbt_pre_exc = pbt - (g("exceptional_items") or 0.0)
             ebitda = pbt_pre_exc + g("finance_costs") + g("depreciation") - (g("other_income") or 0.0)
-    return {"revenue": revenue, "ebitda": ebitda, "pbt": pbt, "pat": pat}
+    return {"revenue": revenue, "ebitda": ebitda, "pbt": pbt, "pat": pat, "interest": interest}
 
 
 def build_metrics(cur: dict, prev: dict, yoy: dict, is_bank: bool) -> tuple[list[dict], dict]:
@@ -200,7 +202,130 @@ def _validate_results(d):
             raise ValueError(f"{name} column fails accounting identities: {', '.join(probs)}")
 
 
+_UNIT_RE = re.compile(
+    r"\bin\s+(?:\S{1,5}\s+)?(crores?|lakhs?|lacs?|millions?|thousands?|billions?)\b", re.I)
+
+
+def sniff_unit(text: str | None) -> str | None:
+    """The unit printed in a statement header ("₹ in crore", "(INR in million)", "Rs. in Lakhs")."""
+    m = _UNIT_RE.search(text or "")
+    return m.group(1).lower() if m else None
+
+
+def shift_quarter(qe: str, n: int) -> str:
+    """Quarter-end ``n`` quarters away from ``qe`` (YYYY-MM-DD)."""
+    d = date.fromisoformat(qe)
+    months = d.year * 12 + (d.month - 1) + 3 * n
+    y, m = divmod(months, 12)
+    return date(y, m + 1, calendar.monthrange(y, m + 1)[1]).isoformat()
+
+
+COLUMNS = ("current", "previous_quarter", "year_ago_quarter")
+_SCALES = (1.0, 0.1, 0.01, 10.0, 100.0, 1e-3, 1e-4, 1e-7, 1000.0)
+
+
+def _scale_hint(ours: float | None, ref: float | None) -> float | None:
+    """The clean power of ten that maps our figure onto the reference (1.0 if they already agree)."""
+    if not ours or not ref or ours <= 0 or ref <= 0:
+        return None
+    r = ref / ours
+    for f in _SCALES:
+        if abs(r / f - 1) <= 0.15:
+            return f
+    return None
+
+
+def _diff(ours: float | None, ref: float | None) -> float | None:
+    if ours is None or ref is None or not ref:
+        return None
+    return abs(ours - ref) / abs(ref) * 100
+
+
+def _ref_columns(ref_page: dict | None, period_end: str) -> dict[str, dict]:
+    """Screener's headline numbers for each of the three columns of the filing, where it has them."""
+    keys = ((ref_page or {}).get("quarters") or {}).get("keys") or []
+    out = {}
+    for name, qe in zip(COLUMNS, (period_end, shift_quarter(period_end, -1), shift_quarter(period_end, -4))):
+        if qe in keys:
+            out[name] = {**screener_headline(ref_page, qe)["current"], "quarter": qe}
+    return out
+
+
+def _rev_for_check(h: dict, bank: bool) -> float | None:
+    # Screener's "Revenue" for lenders is interest earned; for everyone else it is revenue from operations.
+    return h.get("interest") if bank else h.get("revenue")
+
+
+def fix_scale(heads: dict[str, dict], refs: dict[str, dict], bank: bool) -> float | None:
+    """If every column we can compare is off by the same power of ten, the unit was misread."""
+    hints = []
+    for name, ref in refs.items():
+        h = heads.get(name) or {}
+        f = _scale_hint(_rev_for_check(h, bank), ref.get("revenue"))
+        if f is None:
+            f = _scale_hint(h.get("pbt"), ref.get("pbt"))
+        if f is not None:
+            hints.append(f)
+    if hints and all(f == hints[0] for f in hints) and hints[0] != 1.0:
+        return hints[0]
+    return None
+
+
+def cross_check(heads: dict[str, dict], refs: dict[str, dict], bank: bool) -> dict | None:
+    """Compare our read of each column with screener's standardised table (revenue within 2.5%, PBT within 5%)."""
+    checks = []
+    for name, ref in refs.items():
+        h = heads.get(name) or {}
+        rd = _diff(_rev_for_check(h, bank), ref.get("revenue"))
+        pd = _diff(h.get("pbt"), ref.get("pbt"))
+        if rd is None and pd is None:
+            continue
+        rev_ok = rd is None or rd <= 2.5
+        scale = abs(ref.get("revenue") or 0) or abs(ref.get("pbt") or 0)
+        pbt_ok = pd is None or pd <= 5 or abs((h.get("pbt") or 0) - (ref.get("pbt") or 0)) <= 0.01 * scale
+        checks.append({"column": name, "quarter": ref["quarter"], "revenue_diff_pct": None if rd is None else round(rd, 2),
+                       "pbt_diff_pct": None if pd is None else round(pd, 2), "ok": rev_ok and pbt_ok})
+    if not checks:
+        return None
+    worst = max((c["revenue_diff_pct"] for c in checks if c["revenue_diff_pct"] is not None), default=0.0)
+    return {"against": "screener.in", "ok": all(c["ok"] for c in checks), "revenue_diff_pct": worst,
+            "current_checked": any(c["column"] == "current" for c in checks), "checks": checks}
+
+
+def read_results(extracted: dict, page_bank: bool, sniffed_unit: str | None, qe: str) -> dict:
+    """The model's raw extraction -> headline numbers in ₹ crore for the three columns."""
+    unit = extracted.get("unit") or sniffed_unit
+    factor = unit_factor(unit) or 1.0
+    bank = bool(extracted.get("is_bank")) or page_bank
+    cols = extracted.get("columns") or {}
+    heads = {n: headline_from_columns(cols.get(n) or {}, factor, bank) for n in COLUMNS}
+    period = ((extracted.get("periods") or {}).get("current")) or qe
+    if not re.match(r"\d{4}-\d{2}-\d{2}$", str(period)) or str(period)[5:] not in ("03-31", "06-30", "09-30", "12-31"):
+        period = qe
+    return {"heads": heads, "bank": bank, "period_end": period, "basis": extracted.get("basis"), "unit": unit}
+
+
+async def _reference_page(symbol: str | None, page: dict | None, basis: str | None) -> dict | None:
+    """Screener's table on the same basis (consolidated/standalone) as the statement we read."""
+    if not page or not basis or page.get("basis") == basis:
+        return page
+    if basis == "standalone" and symbol:
+        try:
+            return await screener.standalone_page(symbol)
+        except Exception as exc:  # noqa: BLE001
+            log.info("no standalone screener page for %s: %s", symbol, exc)
+    return None
+
+
 async def results_card(filing: dict, ctx: dict) -> dict:
+    """Headline numbers from the results filing itself, verified against screener's standardised table.
+
+    Pass 1 reads the text layer with the fast model. If that read fails the accounting identities or
+    disagrees with screener on any column screener already has (the current quarter, or the previous
+    and year-ago quarters when the filing is too fresh), pass 2 has the smart model read the page images
+    (scanned filings often have a poor OCR layer). A clean power-of-ten mismatch is a misread unit and
+    is corrected rather than rejected.
+    """
     symbol = ctx.get("symbol")
     page = None
     try:
@@ -209,81 +334,107 @@ async def results_card(filing: dict, ctx: dict) -> dict:
         log.info("screener unavailable for %s: %s", symbol, exc)
     qe = expected_quarter_end(filing.get("time"))
     card: dict = {"kind": "results", "quarter": screener.fy_quarter(qe), "period_end": qe, "source": None}
-    extracted = None
+    page_bank = bool(page and page.get("is_bank"))
+    accepted = None
+    rejected: list[dict] = []
     if available() and filing.get("pdf_url"):
         try:
-            text, pdf_bytes, used = await _filing_material(
-                filing, 10, pick=lambda pages: pdfs.pick_results_pages(pages, 2)
-            )
-            res = await complete(
-                "results_extract",
-                system=prompts.RESULTS_SYSTEM,
-                prompt=prompts.RESULTS_PROMPT,
-                document=text or "",
-                pdf=pdf_bytes,
-                tier="fast",
-                max_tokens=4096,
-                validate=_validate_results,
-            )
-            extracted = res.data
-            card["llm"] = res.to_meta()
-            card["pages"] = [p + 1 for p in used]
-        except (LLMUnavailable, pdfs.PdfError) as exc:
+            data = await pdfs.fetch_pdf(filing["pdf_url"])
+            pages = await asyncio.to_thread(pdfs._extract, data, 60)
+        except pdfs.PdfError as exc:
             card["note"] = f"Couldn't read the filing ({str(exc)[:120]})."
+            pages, data = None, None
         except Exception as exc:  # noqa: BLE001
-            log.warning("results extraction failed for %s: %s", filing.get("id"), exc)
-            card["note"] = "Couldn't read the filing."
-    if extracted:
-        factor = unit_factor(extracted.get("unit")) or 1.0
-        bank = bool(extracted.get("is_bank")) or bool(page and page.get("is_bank"))
-        cols = extracted.get("columns") or {}
-        cur = headline_from_columns(cols.get("current") or {}, factor, bank)
-        prev = headline_from_columns(cols.get("previous_quarter") or {}, factor, bank)
-        yoy = headline_from_columns(cols.get("year_ago_quarter") or {}, factor, bank)
-        period = ((extracted.get("periods") or {}).get("current")) or qe
-        if re.match(r"\d{4}-\d{2}-\d{2}$", str(period)):
-            card["period_end"] = period
-            card["quarter"] = screener.fy_quarter(period)
-        metrics, margins = build_metrics(cur, prev, yoy, bank)
-        card.update(
-            {"metrics": metrics, "margins": margins, "basis": extracted.get("basis"), "is_bank": bank,
-             "source": "results filing", "unit_reported": extracted.get("unit")}
-        )
-        # Cross-check against screener's standardised table when it already has the quarter.
-        if page:
-            sh = screener_headline(page, card["period_end"])
-            if sh and sh["current"].get("revenue") and cur.get("revenue"):
-                diff = abs(sh["current"]["revenue"] - cur["revenue"]) / sh["current"]["revenue"] * 100
-                pdiff = None
-                if sh["current"].get("pbt") and cur.get("pbt"):
-                    pdiff = abs(sh["current"]["pbt"] - cur["pbt"]) / abs(sh["current"]["pbt"]) * 100
-                ok = diff <= 2.5 and (pdiff is None or pdiff <= 3)
-                card["verified"] = {"against": "screener.in", "revenue_diff_pct": round(diff, 2), "ok": ok}
-                if not ok:
-                    # Our read of the filing disagrees with the exchange-sourced standardised numbers:
-                    # show those instead, and say so.
-                    metrics, margins = build_metrics(sh["current"], sh["prev"], sh["yoy"], bank)
-                    if bank:
-                        for m in metrics:
-                            if m["key"] == "ebitda":
-                                m["label"] = "Financing profit"
-                    card.update({"metrics": metrics, "margins": margins, "source": "screener.in standardised table",
-                                 "filing_read_rejected": f"FINN's read of the filing differed from screener by {diff:.1f}% on revenue"})
-                    card["verified"] = {"against": "results filing", "revenue_diff_pct": round(diff, 2), "ok": False}
+            log.warning("results PDF fetch failed for %s: %s", filing.get("id"), exc)
+            card["note"] = "Couldn't fetch the filing."
+            pages, data = None, None
+        if pages is not None:
+            text_layer = pdfs.has_text_layer(pages[:10])
+            picked = pdfs.pick_results_pages(pages, 2) if text_layer else list(range(min(10, len(pages) or pdfs.page_count(data))))
+            sniffed = sniff_unit(" ".join(pages[i] for i in picked if i < len(pages))) if text_layer else None
+            passes = ([("text", "fast")] if text_layer else [("vision", "fast")]) + [("vision", "smart")]
+            trimmed = None
+            for n, (mode, tier) in enumerate(passes, 1):
+                try:
+                    if mode == "vision" and trimmed is None:
+                        trimmed = await asyncio.to_thread(pdfs.trim_pdf, data, picked)
+                    res = await complete(
+                        "results_extract" if mode == "text" else "results_extract_vision",
+                        system=prompts.RESULTS_SYSTEM,
+                        prompt=prompts.RESULTS_PROMPT,
+                        document=pdfs.numbered_text(pages, picked, 40_000) if mode == "text" else "",
+                        pdf=trimmed if mode == "vision" else None,
+                        tier=tier,
+                        max_tokens=4096,
+                        validate=_validate_results,
+                    )
+                except LLMUnavailable as exc:
+                    log.info("results pass %d (%s/%s) failed for %s: %s", n, mode, tier, filing.get("id"), str(exc)[:200])
+                    card["note"] = "Couldn't read the filing (models busy or the statement didn't add up)."
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("results pass %d failed for %s: %s", n, filing.get("id"), exc)
+                    continue
+                read = read_results(res.data if isinstance(res.data, dict) else {}, page_bank, sniffed, qe)
+                ref = await _reference_page(symbol, page, read["basis"])
+                refs = _ref_columns(ref, read["period_end"])
+                f = fix_scale(read["heads"], refs, read["bank"])
+                if f:
+                    read["heads"] = {k: {m: (None if v is None else v * f) for m, v in h.items()} for k, h in read["heads"].items()}
+                    read["unit_corrected"] = True
+                ver = cross_check(read["heads"], refs, read["bank"])
+                read.update({"verified": ver, "llm": res.to_meta(), "pages": [p + 1 for p in picked], "pass": n, "mode": mode})
+                if ver is None or ver["ok"]:
+                    accepted = read
+                    break
+                rejected.append(read)
+    if accepted:
+        card.pop("note", None)
+        metrics, margins = build_metrics(accepted["heads"]["current"], accepted["heads"]["previous_quarter"],
+                                         accepted["heads"]["year_ago_quarter"], accepted["bank"])
+        card.update({
+            "metrics": metrics, "margins": margins, "basis": accepted["basis"], "is_bank": accepted["bank"],
+            "source": "results filing", "unit_reported": accepted["unit"], "llm": accepted["llm"], "pages": accepted["pages"],
+            "period_end": accepted["period_end"], "quarter": screener.fy_quarter(accepted["period_end"]),
+        })
+        if accepted["verified"]:
+            card["verified"] = accepted["verified"]
+        if accepted.get("unit_corrected"):
+            card["unit_note"] = "Unit corrected to ₹ crore by matching earlier quarters with screener.in."
+        if accepted["pass"] > 1:
+            card["second_read"] = True
+        if not (accepted["verified"] and accepted["verified"]["current_checked"]):
+            card["provisional"] = True  # re-verify once screener carries the quarter
         return card
-    # Fallback: screener's table, if it already carries the quarter this filing reports.
-    if page:
-        sh = screener_headline(page, qe)
-        if sh:
-            bank = bool(page.get("is_bank"))
-            metrics, margins = build_metrics(sh["current"], sh["prev"], sh["yoy"], bank)
-            card.update({"metrics": metrics, "margins": margins, "basis": page.get("basis"), "is_bank": bank,
-                         "source": "screener.in standardised table"})
-            if bank:  # screener's "operating profit" for non-banks is sales minus expenses, i.e. EBITDA
-                for m in metrics:
-                    if m["key"] == "ebitda":
-                        m["label"] = "Financing profit"
-            return card
+    # Our read disagrees with the exchange-sourced standardised table: show that table, and say so.
+    sh = screener_headline(page, qe) if page else None
+    if sh:
+        bank = page_bank
+        metrics, margins = build_metrics(sh["current"], sh["prev"], sh["yoy"], bank)
+        if bank:  # screener's "Financing Profit" is not pre-provision profit; name it as screener does
+            for m in metrics:
+                if m["key"] == "ebitda":
+                    m["label"] = "Financing profit"
+        card.pop("note", None)
+        card.update({"metrics": metrics, "margins": margins, "basis": page.get("basis"), "is_bank": bank,
+                     "source": "screener.in standardised table"})
+        if rejected:
+            worst = min(rejected, key=lambda r: r["verified"]["revenue_diff_pct"])
+            card["filing_read_rejected"] = f"FINN's read of the filing differed from screener by {worst['verified']['revenue_diff_pct']:.1f}% on revenue"
+            card["verified"] = {**worst["verified"], "against": "results filing"}
+            card["llm"] = worst["llm"]
+        return card
+    if rejected:
+        # Too fresh for screener and our read disagrees with it on earlier quarters: show it, flagged.
+        best = min(rejected, key=lambda r: r["verified"]["revenue_diff_pct"])
+        metrics, margins = build_metrics(best["heads"]["current"], best["heads"]["previous_quarter"],
+                                         best["heads"]["year_ago_quarter"], best["bank"])
+        card.pop("note", None)
+        card.update({"metrics": metrics, "margins": margins, "basis": best["basis"], "is_bank": best["bank"],
+                     "source": "results filing", "unit_reported": best["unit"], "llm": best["llm"], "pages": best["pages"],
+                     "verified": best["verified"], "provisional": True,
+                     "caution": f"Earlier-quarter columns differ from screener.in by up to {best['verified']['revenue_diff_pct']:.1f}% on revenue; treat as unverified."})
+        return card
     card["source"] = None
     card.setdefault("note", "Numbers not available yet.")
     return card
@@ -340,15 +491,18 @@ async def person_background(name: str, role: str, company: str, profile: str | N
         log.info("grounded search unavailable (%s); falling back to web results", str(exc)[:120])
     from ..sources import websearch
 
-    try:
-        results = await websearch.search(f'"{name}" {company} linkedin', 6)
-        if len(results) < 3:
-            results += [r for r in await websearch.search(f"{name} {role} {company}", 6) if r not in results]
-    except Exception as exc:  # noqa: BLE001
-        log.info("web search failed: %s", exc)
-        return None
+    results: list[dict] = []
+    failed = 0
+    for q in (f'"{name}" {company} linkedin', f"{name} {role} {company}"):
+        if len(results) >= 3:
+            break
+        try:
+            results += [r for r in await websearch.search(q, 6) if r not in results]
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            log.info("web search failed for %r: %s", q, exc)
     if not results:
-        return {"found": False, "sources": []}
+        return None if failed else {"found": False, "sources": []}  # None = couldn't look, try again later
     listing = "\n".join(f"[{i}] {r['title']} | {r['url']} | {r['snippet']}" for i, r in enumerate(results[:8]))
     try:
         res = await complete(
@@ -410,6 +564,8 @@ async def management_card(filing: dict, ctx: dict) -> dict:
         c["linkedin_search"] = linkedin_search(c["name"], company)
         c["background"] = bio_by_name.get(c["name"])
     card["changes"] = changes[:6]
+    if any(b is None for b in bios):
+        card["provisional"] = True  # the background lookup couldn't run; retry later
     return card
 
 
@@ -470,7 +626,7 @@ async def summary_card(filing: dict, ctx: dict) -> dict:
 # --------------------------------------------------------------------------- dispatcher
 
 def enrichment_key(filing_id: str) -> str:
-    return f"enrich:v2:{filing_id}"
+    return f"enrich:v3:{filing_id}"
 
 
 _inflight: dict[str, asyncio.Task] = {}
@@ -495,9 +651,12 @@ async def _compute(filing: dict, ctx: dict) -> dict:
     return card
 
 
+PROVISIONAL_TTL = 6 * 3600
+
+
 def cached_enrichment(filing_id: str) -> dict | None:
     key = enrichment_key(filing_id)
-    return cache.get(key, cache.FOREVER) or cache.get(key + ":degraded", 600)
+    return cache.get(key, cache.FOREVER) or cache.get(key + ":provisional", PROVISIONAL_TTL) or cache.get(key + ":degraded", 600)
 
 
 async def enrich(filing: dict, ctx: dict) -> dict:
@@ -514,7 +673,9 @@ async def enrich(filing: dict, ctx: dict) -> dict:
         task.add_done_callback(lambda _t: _inflight.pop(key, None))
     card = await asyncio.shield(task)
     degraded = bool(card.get("note")) or (card["kind"] == "results" and not card.get("metrics"))
-    cache.put(key + ":degraded" if degraded else key, card)
+    # Provisional = good enough to show, but worth re-checking later (e.g. results too fresh for
+    # screener to have the quarter yet). Model calls are cached, so a re-check costs nothing.
+    cache.put(key + (":degraded" if degraded else ":provisional" if card.get("provisional") else ""), card)
     return card
 
 

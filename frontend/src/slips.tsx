@@ -49,9 +49,15 @@ export function ResultsFigures({ e }: { e: Enrichment }) {
       <p className="verify">
         {e.filing_read_rejected ? (
           <><span className="warn">Standardised numbers shown.</span> {e.filing_read_rejected}, so FINN shows screener.in's exchange-sourced table instead. </>
+        ) : e.caution ? (
+          <><span className="warn">Unverified.</span> {e.caution} </>
         ) : e.verified ? (
           e.verified.ok ? (
-            <><span className="ok">✓ Cross-checked.</span> Revenue matches screener.in within {e.verified.revenue_diff_pct.toFixed(1)}%. </>
+            e.verified.current_checked === false ? (
+              <><span className="ok">✓ Earlier quarters match screener.in</span> (within {e.verified.revenue_diff_pct.toFixed(1)}%); this quarter is too new to cross-check. </>
+            ) : (
+              <><span className="ok">✓ Cross-checked.</span> Revenue matches screener.in within {e.verified.revenue_diff_pct.toFixed(1)}%. </>
+            )
           ) : (
             <><span className="warn">Check this.</span> Revenue differs from screener.in by {e.verified.revenue_diff_pct.toFixed(1)}%. </>
           )
@@ -60,7 +66,8 @@ export function ResultsFigures({ e }: { e: Enrichment }) {
         ) : (
           <>Source: {e.source || "filing"}. </>
         )}
-        {e.basis && <>{e.basis[0].toUpperCase() + e.basis.slice(1)} figures{e.pages && e.pages.length > 0 && e.source === "results filing" ? `, read from p.${e.pages.join(", ")} of the filing` : ""}.</>}
+        {e.basis && <>{e.basis[0].toUpperCase() + e.basis.slice(1)} figures{e.pages && e.pages.length > 0 && e.source === "results filing" ? `, read from p.${e.pages.join(", ")} of the filing${e.second_read ? " (page images, second read)" : ""}` : ""}.</>}
+        {e.unit_note && <> {e.unit_note}</>}
       </p>
     </>
   );

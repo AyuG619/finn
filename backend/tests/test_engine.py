@@ -239,3 +239,180 @@ async def test_cache_stale_while_revalidate(tmp_path):
     await asyncio.sleep(0.05)  # background refresh has run
     assert len(calls) == 2
     assert (await cache.cached(key, 0.05, fn, swr=60))["n"] == 2
+
+
+def test_unit_sniffed_from_ocr_header():
+    from app.push.enrich import sniff_unit
+
+    assert sniff_unit("3. Audited Consolidated Balance Sheet \n(in if' crore) \nParticulars") == "crore"
+    assert sniff_unit("(INR in million, except per share data)") == "million"
+    assert sniff_unit("Rs. in Lakhs") == "lakhs"
+    assert sniff_unit("Revenue from operations 1,234") is None
+
+
+def test_shift_quarter():
+    from app.push.enrich import shift_quarter
+
+    assert shift_quarter("2026-09-30", -1) == "2026-06-30"
+    assert shift_quarter("2026-09-30", -4) == "2025-09-30"
+    assert shift_quarter("2026-03-31", -1) == "2025-12-31"
+    assert shift_quarter("2025-12-31", 1) == "2026-03-31"
+
+
+def _ref(rev, pbt, q):
+    return {"revenue": rev, "pbt": pbt, "ebitda": None, "pat": None, "quarter": q}
+
+
+def test_misread_unit_is_corrected_from_earlier_quarters():
+    """A filing in ₹ million read as crore is 10x off on every column screener has: fix, don't reject."""
+    from app.push.enrich import cross_check, fix_scale
+
+    heads = {"current": {"revenue": 533402.0, "pbt": 31658.0}, "previous_quarter": {"revenue": 524551.0, "pbt": 43413.0},
+             "year_ago_quarter": {"revenue": 423323.0, "pbt": 42909.0}}
+    refs = {"previous_quarter": _ref(52455, 4341, "2026-06-30"), "year_ago_quarter": _ref(42332, 4291, "2025-09-30")}
+    f = fix_scale(heads, refs, bank=False)
+    assert f == 0.1
+    fixed = {k: {m: v * f for m, v in h.items()} for k, h in heads.items()}
+    ver = cross_check(fixed, refs, bank=False)
+    assert ver["ok"] and not ver["current_checked"]
+    assert fix_scale(fixed, refs, bank=False) is None  # already right: nothing to fix
+
+
+def test_cross_check_rejects_a_misaligned_column():
+    """INFY Q2 FY27: the OCR layer dropped the revenue line, so the model took the year-ago total income."""
+    from app.push.enrich import cross_check, fix_scale
+
+    heads = {"current": {"revenue": 45472.0, "pbt": 11063.0}, "previous_quarter": {"revenue": 48211.0, "pbt": 11028.0},
+             "year_ago_quarter": {"revenue": 44490.0, "pbt": 10229.0}}
+    refs = {"current": _ref(49244, 11063, "2026-09-30"), "previous_quarter": _ref(48211, 11028, "2026-06-30"),
+            "year_ago_quarter": _ref(44490, 10229, "2025-09-30")}
+    assert fix_scale(heads, refs, bank=False) is None  # 7.7% off is not a unit problem
+    ver = cross_check(heads, refs, bank=False)
+    assert not ver["ok"] and ver["current_checked"]
+    assert ver["revenue_diff_pct"] == 7.66
+    assert [c["ok"] for c in ver["checks"]] == [False, True, True]
+
+
+def test_cross_check_banks_use_interest_earned_and_small_pbt_tolerance():
+    from app.push.enrich import cross_check
+
+    heads = {"current": {"revenue": 60000.0, "interest": 50000.0, "pbt": 120.0}}
+    refs = {"current": _ref(50100, 100, "2026-09-30")}
+    ver = cross_check(heads, refs, bank=True)
+    assert ver["ok"]  # PBT is 20% off but only 0.04% of revenue
+    assert cross_check(heads, refs, bank=False)["ok"] is False  # total income vs interest would fail
+
+
+def test_pick_results_pages_tolerates_ocr():
+    from app.sources.pdfs import pick_results_pages, pnl_score
+
+    ocr = ("Statement of Consolidatcd Unaudited Financial Results for the quarter ended September 30, 2026 "
+           "Total revenue from operalions Other income Total income Finance costs Depreciation and amortisation "
+           "Total expenses Profit before tax Tax expense Profit for the period")
+    sa = ocr.replace("Consolidatcd", "Standalonc")
+    assert pnl_score(ocr)[0] >= 8 and pnl_score(ocr)[1] > pnl_score(sa)[1]
+    assert pick_results_pages(["cover letter", sa, "balance sheet", ocr, "notes"], 1) == [3]
+
+
+def test_websearch_parses_bing():
+    import base64
+
+    from app.sources.websearch import parse_bing
+
+    target = "https://in.linkedin.com/in/ravi-kumar"
+    u = "a1" + base64.urlsafe_b64encode(target.encode()).decode().rstrip("=")
+    page = (
+        '<ol id="b_results"><li class="b_algo" data-id=""><h2><a href="https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=' + u + '&amp;ntb=1" h="ID=SERP">'
+        'Ravi Kumar - <strong>CFO</strong> - LinkedIn</a></h2><div class="b_caption"><p class="b_lineclamp2">Experience: Bajaj Finance &amp; HDFC Bank</p></div></li>'
+        '<li class="b_algo"><h2><a href="https://example.com/x">Other</a></h2><div class="b_caption"><p>Plain snippet</p></div></li></ol>'
+    )
+    r = parse_bing(page)
+    assert r[0] == {"title": "Ravi Kumar - CFO - LinkedIn", "url": target, "snippet": "Experience: Bajaj Finance & HDFC Bank"}
+    assert r[1] == {"title": "Other", "url": "https://example.com/x", "snippet": "Plain snippet"}
+
+
+def test_groq_compound_sources():
+    from app.llm.router import groq_sources
+
+    msg = {"content": "{}", "executed_tools": [
+        {"type": "search", "search_results": {"results": [{"title": "A", "url": "https://a.com", "content": "x"},
+                                                          {"title": "A again", "url": "https://a.com"}]}},
+        {"type": "visit", "output": "page"}, "junk"]}
+    assert groq_sources(msg) == [{"title": "A", "url": "https://a.com"}]
+
+
+def _fake_extraction(rev, prev_rev, yoy_rev, unit="crore"):
+    def col(r):
+        # A self-consistent column: revenue + other income = total income; TI - TE = PBT.
+        return {"revenue_from_operations": r, "other_income": r * 0.02, "total_income": r * 1.02, "total_expenses": r * 0.8,
+                "finance_costs": r * 0.01, "depreciation": r * 0.03, "profit_before_tax": r * 0.22, "net_profit": r * 0.16}
+    return {"basis": "consolidated", "unit": unit, "is_bank": False,
+            "periods": {"current": "2026-09-30"},
+            "columns": {"current": col(rev), "previous_quarter": col(prev_rev), "year_ago_quarter": col(yoy_rev)}}
+
+
+def _results_env(monkeypatch, reads, screener_quarters):
+    from app.llm.router import LLMResult
+    from app.push import enrich
+
+    keys = sorted(screener_quarters)
+    page = {"basis": "consolidated", "is_bank": False, "quarters": {"keys": keys, "rows": {
+        "Sales": [screener_quarters[k] for k in keys],
+        "Operating Profit": [screener_quarters[k] * 0.24 for k in keys],
+        "Profit before tax": [screener_quarters[k] * 0.22 for k in keys],
+        "Net Profit": [screener_quarters[k] * 0.16 for k in keys]}}}
+    calls = []
+
+    async def fake_complete(task, **kw):
+        calls.append((task, kw["tier"], kw["pdf"] is not None))
+        data = reads[len(calls) - 1]
+        kw["validate"](data)
+        return LLMResult("{}", data, "fake:model", False, 10, 10)
+
+    async def fake_page(sym):
+        return page
+
+    async def fake_pdf(url):
+        return b"%PDF"
+
+    text_page = "Statement of Consolidated Unaudited Results quarter ended " + " ".join(
+        ["revenue from operations", "other income", "total income", "finance cost", "depreciation", "profit before tax",
+         "tax expense", "total expenses"]) + " " + "x" * 300
+    monkeypatch.setattr(enrich, "complete", fake_complete)
+    monkeypatch.setattr(enrich, "available", lambda: True)
+    monkeypatch.setattr(enrich.screener, "company_page", fake_page)
+    monkeypatch.setattr(enrich.pdfs, "fetch_pdf", fake_pdf)
+    monkeypatch.setattr(enrich.pdfs, "_extract", lambda data, n: ["cover " + "y" * 300, text_page, "notes " + "z" * 300])
+    monkeypatch.setattr(enrich.pdfs, "trim_pdf", lambda data, pages: b"%PDF-trimmed")
+    return enrich, calls
+
+
+FILING = {"id": "NSE:1", "pdf_url": "https://x/y.pdf", "time": "2026-10-23T16:07:00+05:30"}
+
+
+async def test_results_card_second_read_fixes_a_bad_first_read(monkeypatch):
+    enrich, calls = _results_env(monkeypatch, [_fake_extraction(45472, 48211, 44490), _fake_extraction(49244, 48211, 44490)],
+                                 {"2025-09-30": 44490, "2026-06-30": 48211, "2026-09-30": 49244})
+    card = await enrich.results_card(FILING, {"symbol": "INFY"})
+    assert calls == [("results_extract", "fast", False), ("results_extract_vision", "smart", True)]
+    assert card["source"] == "results filing" and card["second_read"] and card["verified"]["ok"]
+    assert card["metrics"][0]["value"] == 49244 and card["metrics"][0]["yoy"] == 10.7
+    assert "provisional" not in card and "filing_read_rejected" not in card
+
+
+async def test_results_card_falls_back_to_screener_when_both_reads_disagree(monkeypatch):
+    bad = _fake_extraction(45472, 48211, 44490)
+    enrich, calls = _results_env(monkeypatch, [bad, bad], {"2025-09-30": 44490, "2026-06-30": 48211, "2026-09-30": 49244})
+    card = await enrich.results_card(FILING, {"symbol": "INFY"})
+    assert len(calls) == 2
+    assert card["source"] == "screener.in standardised table" and "7.7%" in card["filing_read_rejected"]
+    assert card["metrics"][0]["value"] == 49244
+
+
+async def test_results_card_fresh_quarter_in_million_is_rescaled(monkeypatch):
+    enrich, calls = _results_env(monkeypatch, [_fake_extraction(533402, 524551, 423323, unit=None)],
+                                 {"2025-09-30": 42332, "2026-06-30": 52455})  # screener lacks the new quarter
+    card = await enrich.results_card(FILING, {"symbol": "MARUTI"})
+    assert len(calls) == 1
+    assert card["metrics"][0]["value"] == 53340.2 and card["unit_note"]
+    assert card["verified"]["ok"] and not card["verified"]["current_checked"] and card["provisional"]

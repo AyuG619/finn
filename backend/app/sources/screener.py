@@ -317,6 +317,20 @@ async def company_page(symbol: str) -> dict:
     return await cache.cached(f"screener:page:{sym}", 6 * 3600, fetch, swr=24 * 3600)
 
 
+async def standalone_page(symbol: str) -> dict:
+    """Screener's standalone page (used to verify a filing read from its standalone statement)."""
+    sym = normalise_symbol(symbol)
+
+    async def fetch() -> dict:
+        html, url = await _fetch_page(f"/company/{sym}/")
+        data = parse_company_page(html, url)
+        if not data.get("quarters"):
+            raise CompanyNotFound(sym)
+        return data
+
+    return await cache.cached(f"screener:page:sa:{sym}", 6 * 3600, fetch, swr=24 * 3600)
+
+
 async def company_ids(symbol: str) -> dict:
     page = await company_page(symbol)
     return {k: page.get(k) for k in ("company_id", "warehouse_id", "bse_code", "nse_symbol", "name", "symbol")}

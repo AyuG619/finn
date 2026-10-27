@@ -138,11 +138,31 @@ RESULTS_KEYWORDS = {
 }
 
 
+# Short stems, so a scanned filing's imperfect OCR layer ("revenue from operalions") still matches.
 PNL_LINE_ITEMS = [
-    "revenue from operations", "other income", "total income", "finance cost", "depreciation", "profit before tax",
-    "tax expense", "total expenses", "employee benefit", "profit for the period", "interest earned", "interest expended",
-    "operating profit before provisions", "provisions (other than tax)", "net profit",
+    "revenue from", "other income", "total income", "finance cost", "depreciation", "before tax",
+    "tax expense", "total expenses", "employee benefit", "for the period", "interest earned", "interest expended",
+    "before provisions", "provisions (other", "net profit",
 ]
+
+
+def pnl_score(text: str) -> tuple[int, float]:
+    """(P&L line-item coverage, preference bonus) for one page."""
+    low = text.lower()
+    coverage = sum(1 for k in PNL_LINE_ITEMS if k in low)
+    head = low[:1500]
+    bonus = 0.0
+    if re.search(r"consol[il1]dat", head):
+        bonus += 3
+    elif re.search(r"stand[a-z]?alon", head):
+        bonus -= 1.5
+    if re.search(r"quarter ended|three months ended", low):
+        bonus += 2
+    if re.search(r"statement of (un)?audited", low):
+        bonus += 1
+    if re.search(r"us\$|usd|ifrs", low[:2000]):
+        bonus -= 3
+    return coverage, bonus
 
 
 def pick_results_pages(pages: list[str], limit: int = 3) -> list[int]:
@@ -154,21 +174,9 @@ def pick_results_pages(pages: list[str], limit: int = 3) -> list[int]:
     """
     cands = []
     for i, text in enumerate(pages[:45]):
-        low = text.lower()
-        coverage = sum(1 for k in PNL_LINE_ITEMS if k in low)
+        coverage, bonus = pnl_score(text)
         if coverage < 5:
             continue
-        bonus = 0.0
-        if "consolidated" in low[:1500]:
-            bonus += 3
-        elif "standalone" in low[:1500]:
-            bonus -= 1.5
-        if re.search(r"quarter ended|three months ended", low):
-            bonus += 2
-        if re.search(r"statement of (un)?audited", low):
-            bonus += 1
-        if re.search(r"us\$|usd|ifrs", low[:2000]):
-            bonus -= 3
         cands.append((coverage + bonus, i))
     if not cands:
         scored = [(i, s) for i, s in score_pages(pages, RESULTS_KEYWORDS) if s > 0]

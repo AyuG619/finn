@@ -53,6 +53,7 @@ class ModelSlot:
     max_input_tokens: int
     supports_pdf: bool = False
     supports_search: bool = False
+    search_only: bool = False  # web-search agents (Groq compound): only for calls that need search
     cooldown_until: float = 0.0
     search_cooldown_until: float = 0.0  # grounding has its own (often zero) free quota
     calls: deque = field(default_factory=deque)
@@ -145,6 +146,7 @@ GROQ_PREFS = {
         "meta-llama/llama-4-scout-17b-16e-instruct",
     ],
 }
+GROQ_SEARCH_MODELS = ["groq/compound-mini", "groq/compound"]
 # Free-tier tokens-per-minute budgets are the binding constraint on Groq; keep requests well inside.
 GROQ_INPUT_BUDGET = {
     "llama-3.1-8b-instant": 4500,
@@ -211,6 +213,12 @@ async def discover(force: bool = False) -> dict:
                 chosen = [p for p in prefs if not gnames or p in gnames][:3]
                 for n in chosen:
                     target.append(ModelSlot("groq", n, tier, rpm=28, max_input_tokens=GROQ_INPUT_BUDGET.get(n, 5000)))
+            # Groq's compound systems run their own web search: the fallback when Google grounding's
+            # free quota is exhausted. Used only for calls that ask for search.
+            for n in GROQ_SEARCH_MODELS:
+                if not gnames or n in gnames:
+                    for tier, target in (("fast", fast), ("smart", smart)):
+                        target.append(ModelSlot("groq", n, tier, rpm=12, max_input_tokens=6000, supports_search=True, search_only=True))
         # Each tier can borrow the other tier's models as a last resort.
         _slots["fast"] = fast + [s for s in smart if s.provider == "gemini"]
         _slots["smart"] = smart + [s for s in fast if s.provider == "gemini"]
@@ -238,7 +246,7 @@ def estimate_tokens(text: str) -> int:
 
 def _price_key(slot: ModelSlot) -> str:
     if slot.provider == "groq":
-        return "groq-large" if any(x in slot.model for x in ("70b", "120b", "kimi", "maverick")) else "groq-small"
+        return "groq-large" if any(x in slot.model for x in ("70b", "120b", "kimi", "maverick", "compound")) else "groq-small"
     if "flash-lite" in slot.model:
         return "flash-lite"
     if "pro" in slot.model:
@@ -375,14 +383,16 @@ async def _call_gemini(slot: ModelSlot, system: str, prompt: str, *, json_mode: 
 
 async def _call_groq(slot: ModelSlot, system: str, prompt: str, *, json_mode: bool, max_tokens: int,
                      temperature: float) -> tuple[str, int, int, list]:
+    agent = "compound" in slot.model
     body: dict = {
         "model": slot.model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        "temperature": temperature,
-        "max_completion_tokens": max_tokens,
     }
-    if json_mode:
-        body["response_format"] = {"type": "json_object"}
+    if not agent:  # compound systems take a minimal request; the prompt itself asks for JSON
+        body["temperature"] = temperature
+        body["max_completion_tokens"] = max_tokens
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
     if "gpt-oss" in slot.model:
         body["reasoning_effort"] = "low" if slot.tier == "fast" else "medium"
     r = await _http().post(
@@ -403,11 +413,25 @@ async def _call_groq(slot: ModelSlot, system: str, prompt: str, *, json_mode: bo
     if r.status_code != 200:
         raise _BadRequest(f"groq {r.status_code}: {r.text[:300]}")
     data = r.json()
-    text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    msg = (data.get("choices") or [{}])[0].get("message") or {}
+    text = msg.get("content") or ""
     if not text.strip():
         raise _BadRequest("groq empty output")
     u = data.get("usage") or {}
-    return text, int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0), []
+    return text, int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0), groq_sources(msg) if agent else []
+
+
+def groq_sources(msg: dict) -> list[dict]:
+    """Web pages a Groq compound system read (message.executed_tools[].search_results.results[])."""
+    out, seen = [], set()
+    for tool in msg.get("executed_tools") or []:
+        res = (tool.get("search_results") or {}).get("results") if isinstance(tool, dict) else None
+        for r in res or []:
+            url = (r or {}).get("url")
+            if url and url.startswith("http") and url not in seen:
+                seen.add(url)
+                out.append({"title": r.get("title") or "source", "url": url})
+    return out[:8]
 
 
 # ------------------------------------------------------------------ public API
@@ -479,7 +503,7 @@ async def complete(
         usage["by_task"][task]["cache_hits"] += 1
         return LLMResult(hit["text"], hit.get("data"), hit["model"], True, hit.get("in", 0), hit.get("out", 0), hit.get("sources", []))
 
-    ladder = [s for s in _slots.get(tier, []) if (pdf is None or s.supports_pdf) and (not search or s.supports_search)]
+    ladder = [s for s in _slots.get(tier, []) if (pdf is None or s.supports_pdf) and (s.supports_search if search else not s.search_only)]
     if not ladder:
         raise LLMUnavailable(f"no model available for tier={tier} pdf={pdf is not None} search={search}")
     errors: list[str] = []

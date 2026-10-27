@@ -44,8 +44,12 @@ export interface Enrichment {
   basis?: string;
   is_bank?: boolean;
   source?: string | null;
-  verified?: { against: string; revenue_diff_pct: number; ok: boolean };
+  verified?: { against: string; revenue_diff_pct: number; ok: boolean; current_checked?: boolean };
   filing_read_rejected?: string;
+  caution?: string;
+  unit_note?: string;
+  second_read?: boolean;
+  provisional?: boolean;
   pages?: number[];
   // management
   changes?: Person[];
