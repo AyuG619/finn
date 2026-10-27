@@ -434,3 +434,16 @@ def test_trim_pdf_keeps_selected_pages_and_raster_fallback():
     src = fitz.open(stream=data, filetype="pdf")
     raster = fitz.open(stream=pdfs._raster_pdf(src, [0, 2]), filetype="pdf")
     assert raster.page_count == 2 and raster.load_page(0).get_images()
+
+
+def test_bio_keeps_only_linkedin_profiles_and_legible_sources():
+    from app.push.enrich import _bio_result
+
+    b = _bio_result({"found": True, "headline": "h", "linkedin_url": "https://www.linkedin.com/posts/nhpclimited_nhpc-activity-75"},
+                    [{"title": "à¤¨à¥‡à¤¶à¤¨à¤² à¤¸à¥à¤Ÿà¥‰à¤• à¤à¤•à¥à¤¸à¤šà¥‡à¤‚à¤œ", "url": "https://nsearchives.nseindia.com/x.pdf"},
+                     {"title": "Corporate Announcements", "url": "https://ntpc.co.in/investors"},
+                     {"title": "dup", "url": "https://ntpc.co.in/investors"}])
+    assert b["linkedin_url"] is None
+    assert b["sources"] == [{"title": "nsearchives.nseindia.com", "url": "https://nsearchives.nseindia.com/x.pdf"},
+                            {"title": "Corporate Announcements", "url": "https://ntpc.co.in/investors"}]
+    assert _bio_result({"found": True, "linkedin_url": "https://in.linkedin.com/in/ravi-kumar-123"}, [])["linkedin_url"] == "https://in.linkedin.com/in/ravi-kumar-123"

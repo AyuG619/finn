@@ -330,7 +330,8 @@ def _retry_after_from_gemini(body: dict) -> tuple[float, bool]:
 # ------------------------------------------------------------------ provider calls
 
 async def _call_gemini(slot: ModelSlot, system: str, prompt: str, *, json_mode: bool, schema: dict | None,
-                       pdf: bytes | None, search: bool, max_tokens: int, temperature: float) -> tuple[str, int, int, list]:
+                       pdf: bytes | None, search: bool, max_tokens: int, temperature: float,
+                       timeout: float = 120.0, effort: str | None = None) -> tuple[str, int, int, list]:
     parts: list[dict] = []
     if pdf is not None:
         parts.append({"inline_data": {"mime_type": "application/pdf", "data": base64.b64encode(pdf).decode()}})
@@ -350,13 +351,16 @@ async def _call_gemini(slot: ModelSlot, system: str, prompt: str, *, json_mode: 
     # Fast-tier 2.x flash models think by default; turn it off for bulk extraction to save tokens.
     if slot.tier == "fast" and re.search(r"gemini-2\.\d-flash(?!-lite)", slot.model):
         gen["thinkingConfig"] = {"thinkingBudget": 0}
+    elif effort == "low" and "lite" not in slot.model:
+        # Extraction needs care, not long deliberation: cap thinking so a read takes seconds, not minutes.
+        gen["thinkingConfig"] = {"thinkingBudget": 1024} if re.search(r"gemini-2\.", slot.model) else {"thinkingLevel": "low"}
     url = f"{GEMINI_BASE}/models/{slot.model}:generateContent"
     headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
-    r = await _http().post(url, json=body, headers=headers)
+    r = await _http().post(url, json=body, headers=headers, timeout=timeout)
     if r.status_code == 400 and ("thinking" in r.text.lower() or "responseschema" in r.text.lower()):
         gen.pop("thinkingConfig", None)
         gen.pop("responseSchema", None)
-        r = await _http().post(url, json=body, headers=headers)
+        r = await _http().post(url, json=body, headers=headers, timeout=timeout)
     if r.status_code == 429:
         try:
             delay, daily = _retry_after_from_gemini(r.json())
@@ -388,7 +392,7 @@ async def _call_gemini(slot: ModelSlot, system: str, prompt: str, *, json_mode: 
 
 
 async def _call_groq(slot: ModelSlot, system: str, prompt: str, *, json_mode: bool, max_tokens: int,
-                     temperature: float, search: bool = False) -> tuple[str, int, int, list]:
+                     temperature: float, search: bool = False, timeout: float = 120.0) -> tuple[str, int, int, list]:
     agent = "compound" in slot.model
     body: dict = {
         "model": slot.model,
@@ -405,7 +409,7 @@ async def _call_groq(slot: ModelSlot, system: str, prompt: str, *, json_mode: bo
             body["tools"] = [{"type": "browser_search"}]
             body["tool_choice"] = "required"
     r = await _http().post(
-        f"{GROQ_BASE}/chat/completions", json=body, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}
+        f"{GROQ_BASE}/chat/completions", json=body, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, timeout=timeout
     )
     if r.status_code == 429:
         ra = r.headers.get("retry-after")
@@ -505,12 +509,19 @@ async def complete(
     temperature: float = 0.1,
     validate=None,
     cache_ttl: float = cache.FOREVER,
+    timeout: float = 120.0,
+    deadline: float | None = None,
+    effort: str | None = None,
+    search_agents: bool | None = None,
 ) -> LLMResult:
     """Run a task on the best available model for ``tier`` with caching and fallbacks.
 
     ``document`` is the long source text; it is placed after ``prompt`` and truncated to fit
     smaller models. ``pdf`` (bytes) requires a PDF-capable provider. ``validate`` is an optional
     callable that raises on semantically bad JSON, triggering the next fallback.
+    ``timeout`` bounds each model call and ``deadline`` (seconds) the whole ladder. ``effort="low"``
+    caps thinking on reasoning models. With ``search``, ``search_agents`` False/True restricts the
+    ladder to grounded chat models / to search agents (whose fetched pages cost far more tokens).
     """
     if not available():
         raise LLMUnavailable("no LLM API key configured")
@@ -524,12 +535,18 @@ async def complete(
         return LLMResult(hit["text"], hit.get("data"), hit["model"], True, hit.get("in", 0), hit.get("out", 0), hit.get("sources", []))
 
     ladder = [s for s in _slots.get(tier, []) if (pdf is None or s.supports_pdf) and (s.supports_search if search else not s.search_only)]
+    if search and search_agents is not None:
+        ladder = [s for s in ladder if s.search_only == search_agents]
     if not ladder:
         raise LLMUnavailable(f"no model available for tier={tier} pdf={pdf is not None} search={search}")
     errors: list[str] = []
+    t_end = time.time() + deadline if deadline else None
     for round_ in range(2):
         for slot in ladder:
             now = time.time()
+            if t_end is not None and now >= t_end - 5:
+                errors.append("time budget spent")
+                break
             if slot.cooldown_until > now or (search and slot.search_cooldown_until > now):
                 continue
             doc = _fit_document(document, slot.max_input_tokens, system + prompt) if document else ""
@@ -539,14 +556,16 @@ async def complete(
             full_prompt = prompt + ("\n\n<document>\n" + doc + "\n</document>" if doc else "")
             await _pace(slot)
             try:
+                call_timeout = timeout if t_end is None else max(5.0, min(timeout, t_end - time.time()))
                 if slot.provider == "gemini":
                     text, tin, tout, sources = await _call_gemini(
                         slot, system, full_prompt, json_mode=json_mode, schema=schema, pdf=pdf, search=search,
-                        max_tokens=max_tokens, temperature=temperature,
+                        max_tokens=max_tokens, temperature=temperature, timeout=call_timeout, effort=effort,
                     )
                 else:
                     text, tin, tout, sources = await _call_groq(
-                        slot, system, full_prompt, json_mode=json_mode, max_tokens=max_tokens, temperature=temperature, search=search
+                        slot, system, full_prompt, json_mode=json_mode, max_tokens=max_tokens, temperature=temperature, search=search,
+                        timeout=call_timeout,
                     )
             except _RateLimited as rl:
                 pause = 3600 if rl.daily else min(max(rl.retry_after, 5), 120)
@@ -578,6 +597,8 @@ async def complete(
             return LLMResult(text, data, slot.key, False, tin, tout, sources)
         # Everything is cooling down: wait for the soonest model once, then try again.
         soonest = min((max(s.cooldown_until, s.search_cooldown_until if search else 0) for s in ladder), default=0) - time.time()
+        if t_end is not None and time.time() + soonest >= t_end - 5:
+            break
         if round_ == 0 and 0 < soonest <= 65:
             await asyncio.sleep(soonest + 0.5)
             continue

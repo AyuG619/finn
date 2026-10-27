@@ -45,8 +45,12 @@ is for triage, not browsing.
    content hash, and only selected pages are sent. A full research run is about 6 calls and 70k tokens,
    roughly $0.01 at list prices and ₹0 on free tiers.
 4. **Robust to real data.** BSE's API blocks cloud IPs, so the feed falls back NSE → BSE → screener.
-   Yahoo's missing sessions are patched from NSE prices. A results read that breaks accounting identities or
-   disagrees with screener's table is rejected, never shown as fact.
+   Yahoo's missing sessions are patched from NSE prices.
+5. **Numbers are verified, not trusted.** A results read must pass accounting identities and match
+   screener.in on every column screener has. On results day that means the previous and year-ago columns.
+   - A clean 10× gap is a misread unit (₹ million read as crore), so it is corrected and labelled.
+   - Any other gap sends the page images to the stronger model for a second read.
+   - If both reads disagree, the slip shows screener's standardised numbers and says so.
 
 **Deliberately left out**
 

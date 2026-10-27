@@ -368,6 +368,9 @@ async def results_card(filing: dict, ctx: dict) -> dict:
                         tier=tier,
                         max_tokens=4096,
                         validate=_validate_results,
+                        effort="low",
+                        timeout=60 if mode == "text" else 75,
+                        deadline=80 if mode == "text" else 100,
                     )
                 except LLMUnavailable as exc:
                     log.info("results pass %d (%s/%s) failed for %s: %s", n, mode, tier, filing.get("id"), str(exc)[:200])
@@ -463,44 +466,70 @@ def linkedin_search(name: str, company: str) -> str:
 
 def _bio_result(d: dict, sources: list) -> dict:
     if not d.get("found"):
-        return {"found": False, "sources": sources[:3]}
+        return {"found": False, "sources": clean_sources(sources)[:3]}
     li = str(d.get("linkedin_url") or "")
     return {
         "found": True,
         "headline": d.get("headline"),
         "background": d.get("background"),
         "previous_roles": [r for r in (d.get("previous_roles") or []) if isinstance(r, dict)][:4],
-        "linkedin_url": li if li.startswith("https://") and "linkedin.com/" in li else None,
+        # A profile, not a post or a company page that merely mentions the person.
+        "linkedin_url": li if re.match(r"https://([a-z]{2,3}\.)?(www\.)?linkedin\.com/in/[^/?#]+", li) else None,
         "confidence": d.get("confidence"),
-        "sources": sources[:4],
+        "sources": clean_sources(sources)[:4],
     }
 
 
-async def person_background(name: str, role: str, company: str, profile: str | None) -> dict | None:
-    """Professional background of an incoming executive.
+def clean_sources(sources: list[dict]) -> list[dict]:
+    """Readable source labels: a page's own title when it is legible, else its domain."""
+    out, seen = [], set()
+    for s in sources or []:
+        url = str(s.get("url") or "")
+        if not url.startswith("http") or url in seen:
+            continue
+        seen.add(url)
+        title = re.sub(r"\s+", " ", str(s.get("title") or "")).strip()
+        legible = title and len(title) <= 90 and sum(ch.isascii() for ch in title) / len(title) > 0.85
+        out.append({"title": title if legible else _domain(url), "url": url})
+    return out
 
-    1. Gemini with Google Search grounding (when the key's quota allows it).
-    2. Otherwise: a keyless web search (LinkedIn-first) whose results are summarised by the fast model,
-       which may only use results that clearly match the person.
+
+async def person_background(name: str, role: str, company: str, profile: str | None, bucket: str | None = None) -> dict | None:
+    """Professional background of an incoming executive, cheapest route first.
+
+    1. Gemini with Google Search grounding (when the key's free search quota allows it).
+    2. A keyless web search (LinkedIn first) whose results the fast model summarises, using only results
+       that clearly match the person (~1k tokens).
+    3. Only if that couldn't run, or found nothing for a CEO/CFO/chair: a Groq search agent, which reads
+       whole pages (~100k+ tokens), so it is the last resort.
     The company's own disclosed profile (SEBI requires one for appointments) is always shown alongside.
+    Returns None when no route could run (so the card is re-tried later).
     """
     if not available():
         return None
+    ask = dict(system=prompts.BIO_SYSTEM, prompt=prompts.BIO_PROMPT.format(name=name, role=role, company=company, profile=profile or "(none)"),
+               tier="fast", search=True, max_tokens=1200, temperature=0.2)
     try:
-        res = await complete(
-            "person_bio",
-            system=prompts.BIO_SYSTEM,
-            prompt=prompts.BIO_PROMPT.format(name=name, role=role, company=company, profile=profile or "(none)"),
-            tier="fast",
-            search=True,
-            max_tokens=1200,
-            temperature=0.2,
-        )
+        res = await complete("person_bio", **ask, search_agents=False, timeout=45, deadline=60)
         d = res.data if isinstance(res.data, dict) else {}
         if d:
             return _bio_result(d, res.sources)
     except LLMUnavailable as exc:
         log.info("grounded search unavailable (%s); falling back to web results", str(exc)[:120])
+    bio = await _bio_from_web_results(name, role, company, profile)
+    if bio is not None and (bio.get("found") or bucket not in ("ceo_md", "cfo", "chair")):
+        return bio
+    try:
+        res = await complete("person_bio_agent", **ask, search_agents=True, timeout=60, deadline=75)
+        d = res.data if isinstance(res.data, dict) else {}
+        if d:
+            return _bio_result(d, res.sources)
+    except LLMUnavailable as exc:
+        log.info("search agent unavailable: %s", str(exc)[:120])
+    return bio
+
+
+async def _bio_from_web_results(name: str, role: str, company: str, profile: str | None) -> dict | None:
     from ..sources import websearch
 
     results: list[dict] = []
@@ -514,7 +543,7 @@ async def person_background(name: str, role: str, company: str, profile: str | N
             failed += 1
             log.info("web search failed for %r: %s", q, exc)
     if not results:
-        return None if failed else {"found": False, "sources": []}  # None = couldn't look, try again later
+        return None if failed else {"found": False, "sources": []}  # None = couldn't look
     listing = "\n".join(f"[{i}] {r['title']} | {r['url']} | {r['snippet']}" for i, r in enumerate(results[:8]))
     try:
         res = await complete(
@@ -524,12 +553,14 @@ async def person_background(name: str, role: str, company: str, profile: str | N
             tier="fast",
             max_tokens=900,
             temperature=0.1,
+            timeout=45,
+            deadline=60,
         )
     except LLMUnavailable:
         return None
     d = res.data if isinstance(res.data, dict) else {}
     used = [results[i] for i in (d.get("used_results") or []) if isinstance(i, int) and 0 <= i < len(results)]
-    return _bio_result(d, [{"title": _domain(r["url"]), "url": r["url"]} for r in used])
+    return _bio_result(d, [{"title": r["title"], "url": r["url"]} for r in used])
 
 
 def _domain(url: str) -> str:
@@ -557,6 +588,8 @@ async def management_card(filing: dict, ctx: dict) -> dict:
             pdf=pdf_bytes,
             tier="fast",
             max_tokens=2048,
+            timeout=45,
+            deadline=70,
         )
     except LLMUnavailable as exc:
         card["summary"] = filing.get("detail") or filing.get("subject")
@@ -569,7 +602,7 @@ async def management_card(filing: dict, ctx: dict) -> dict:
     incoming = [c for c in changes if c.get("change") in ("appointed", "re-designated") and c.get("role_bucket") not in ("company_secretary", "auditor")]
     incoming.sort(key=lambda c: TOP_BUCKETS.get(c.get("role_bucket"), 9))
     bios = await asyncio.gather(
-        *[person_background(c["name"], c.get("role") or "", company, c.get("profile_from_filing")) for c in incoming[:2]]
+        *[person_background(c["name"], c.get("role") or "", company, c.get("profile_from_filing"), c.get("role_bucket")) for c in incoming[:2]]
     )
     bio_by_name = {c["name"]: b for c, b in zip(incoming[:2], bios)}
     for c in changes:
@@ -616,6 +649,8 @@ async def summary_card(filing: dict, ctx: dict) -> dict:
             tier="fast",
             max_tokens=1024,
             validate=_validate_summary,
+            timeout=45,
+            deadline=70,
         )
     except LLMUnavailable as exc:
         card["one_liner"] = filing.get("detail") or filing.get("subject")
@@ -638,7 +673,7 @@ async def summary_card(filing: dict, ctx: dict) -> dict:
 # --------------------------------------------------------------------------- dispatcher
 
 def enrichment_key(filing_id: str) -> str:
-    return f"enrich:v5:{filing_id}"
+    return f"enrich:v6:{filing_id}"
 
 
 _inflight: dict[str, asyncio.Task] = {}
